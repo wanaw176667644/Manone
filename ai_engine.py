@@ -1,14 +1,17 @@
 """
-ai_engine.py — Updated version.
+ai_engine.py — Fixed version.
 
 CHANGES (this version):
-1. Trend emoji (📈 📉 📊) placed INLINE in the headline by the AI, not as a footer line.
-   📈 = price rising / hitting highs
-   📉 = price dropping / falling / lows
-   📊 = volatile / mixed / uncertain / no clear direction
-2. Hashtags remain #XAUUSD / #DXY / #OIL — no trailing emoji line after hashtags.
-3. System prompt tightened: ONLY news that moves Gold (XAUUSD), Oil, or DXY is approved.
-4. Video prompt: war/conflict ONLY if it moves Gold, Oil, or DXY.
+1. _VIDEO_CAPTION_PROMPT completely rewritten:
+   - AI preserves the ORIGINAL caption language — no rewriting
+   - Only removes: other channel usernames, URLs, foreign-channel hashtags
+   - Adds ONE lead emoji at the start + trend emoji at end of first line only
+   - Zero AI analysis, predictions, or commentary allowed
+   - ONLY approves: physical war events (missile, strike, airstrike, attack, explosion)
+     in regions that directly affect Oil or Gold prices
+2. Trend emoji (📈 📉 📊) placed INLINE in the headline by the AI, not as a footer line.
+3. Hashtags remain #XAUUSD / #DXY / #OIL — no trailing emoji line after hashtags.
+4. System prompt tightened: ONLY news that moves Gold (XAUUSD), Oil, or DXY is approved.
 5. Random 💡 signature 25% of the time.
 6. "Be careful" reminder lines — short, event-specific.
 """
@@ -204,49 +207,122 @@ RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES — NO TRAILING COMMAS:
 {"approved": true, "reason": "brief reason", "issues": [], "formatted_text": "...", "confidence": 0.9}
 """.strip()
 
+# ── VIDEO CAPTION PROMPT — FIXED ──────────────────────────────────────────────
+# Core principle: PRESERVE original caption. Do NOT rewrite. Do NOT add analysis.
+# Only clean junk, add one lead emoji + trend emoji on first line, add hashtag.
 _VIDEO_CAPTION_PROMPT = """
-You are AXIOM INTEL — a Senior editor for a FOREX TRADING channel that trades Gold (XAUUSD), Oil, and DXY.
+You are a strict content filter for a FOREX TRADING channel (Gold, Oil, DXY).
 
-A video has been received. Read the caption and decide:
+A video has been received. Read the caption carefully and decide.
 
-APPROVE ONLY IF:
-- The video is about WAR or ARMED CONFLICT that directly affects Gold, Oil, or DXY:
-  • Military strikes, airstrikes, missile attacks, shelling, invasions
-  • Conflict in oil-producing regions: Middle East, Iran, Iraq, Russia, Libya, Gulf states
-  • War escalation causing safe-haven Gold demand or Oil supply disruption
-  • Strait of Hormuz threats, OPEC conflict, sanctions on oil exporters
-  • World leader war/military statements that move Oil or Gold prices
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+APPROVE ONLY IF — ALL conditions must be true:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. The caption describes a REAL, PHYSICAL military/war event:
+   - Missile strike / airstrike / air strike / bombing
+   - Military attack / armed assault / explosion at a military target
+   - Direct armed invasion / shelling / rocket fire
+   - Naval or aerial strike on infrastructure
 
-REJECT IF:
-- War or conflict in a region with NO impact on Gold, Oil, or DXY
-- Technical analysis, chart patterns, buy/sell signals
-- Forex tips, trading advice, predictions
-- Promotions, ads, channel plugs
-- Economic data releases (handled separately)
-- Entertainment, sports, unrelated news
-- Empty or vague captions with no clear event
-- Political news with no commodity/currency market link
+2. The event is in a region that directly impacts Oil or Gold prices:
+   - Middle East (Iran, Iraq, Israel, Gaza, Lebanon, Yemen, Syria)
+   - Gulf region (Saudi Arabia, UAE, Kuwait, Strait of Hormuz)
+   - Russia / Ukraine (affects Oil supply and Gold safe-haven)
+   - Any major oil-producing or oil-transit region
 
-If APPROVED:
-- Write a clean, factual 1-3 sentence post in English
-- First line: lead emoji + headline + trend emoji at the end of the headline
-  📈 if price/market surged/spiked up, 📉 if dropped/crashed, 📊 if volatile/mixed
-- Then 1-2 sentences of clean factual detail from the caption
-- End with the relevant hashtag(s): #XAUUSD and/or #OIL
-- No forecast, no opinion, no signals
-- Do NOT add signature (added automatically)
-- Plain text only — no asterisks, no markdown bold
+REJECT if ANY of these apply:
+- Only political tension, diplomatic crisis, or sanctions — no physical strike
+- Protests, demonstrations, civil unrest with no military action
+- Economic news, data, or market analysis
+- Predictions, opinions, or "could impact" language
+- Strike or attack outside an Oil/Gold-relevant region
+- Vague or empty captions with no clear event
+- Channel promotions, ads, trading signals
 
-Example approved output:
-🚨 Iran launches strikes on Gulf oil facility, crude spikes 📈
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IF APPROVED — FORMATTING RULES (CRITICAL):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Explosions reported at a major oil terminal in the Persian Gulf following Iranian military action. Oil prices surged over 4% on supply disruption fears.
+YOUR JOB IS TO CLEAN — NOT TO REWRITE.
+
+Step 1 — REMOVE only:
+  - Other Telegram channel usernames (e.g. @SomeChannel, t.me/SomeChannel)
+  - Raw URLs (http://, https://)
+  - Hashtags from other channels (keep #OIL #XAUUSD if already there, remove all others)
+  - Excessive repeated emojis (keep max 1-2 per line)
+  - "forwarded from" lines
+
+Step 2 — KEEP everything else exactly as written:
+  - The original words, sentences, and structure
+  - Numbers, locations, names
+  - The original emojis (within reason)
+  - Short sentences already in the caption
+
+Step 3 — ADD at the very beginning:
+  - ONE lead emoji that fits the event: 🚨 ⚔️ 🛢️ 🌍
+  - Only if the caption does not already start with a strong relevant emoji
+
+Step 4 — ADD at the end of the FIRST LINE only:
+  - ONE trend emoji based on market direction mentioned or implied:
+    📈 if Oil or Gold spiked / surged / jumped up
+    📉 if Oil or Gold dropped / fell / crashed
+    📊 if direction is unclear, mixed, or not mentioned
+
+Step 5 — ADD at the end of the full post:
+  - Relevant hashtag(s): #OIL and/or #XAUUSD (only the ones that apply)
+  - Do NOT add #DXY for war/conflict posts unless USD is directly mentioned
+
+Step 6 — DO NOT ADD:
+  - Any analysis ("markets reacted", "this could push Oil higher")
+  - Any prediction ("Gold may rise", "Oil likely to spike")
+  - Any opinion or commentary
+  - "Be careful" lines (added automatically by the system)
+  - Signature (added automatically)
+  - Any sentence that was not in the original caption
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+EXAMPLE 1:
+Caption input:
+"🔴 BREAKING: Iran launched ballistic missiles at a US military base in Iraq.
+Multiple explosions reported near Baghdad. @NewsChannel24 t.me/NewsChannel24"
+
+Correct output:
+🚨 BREAKING: Iran launched ballistic missiles at a US military base in Iraq. 📈
+Multiple explosions reported near Baghdad.
 
 #OIL #XAUUSD
 
-Caption: {caption}
+EXAMPLE 2:
+Caption input:
+"Israeli airstrikes hit Hezbollah weapons depots in southern Lebanon.
+Heavy smoke reported. #BreakingNews @warzone_updates"
 
-RESPOND WITH VALID JSON ONLY:
+Correct output:
+🚨 Israeli airstrikes hit Hezbollah weapons depots in southern Lebanon. 📊
+Heavy smoke reported.
+
+#OIL #XAUUSD
+
+EXAMPLE 3 (WRONG — do NOT do this):
+Caption input: "Iran fires missiles at Iraq base."
+Wrong output:
+🚨 Iran Launches Missile Strike on US Base in Iraq — Oil Surges on Supply Fears 📈
+Iran has fired a volley of ballistic missiles at a United States military installation in Iraq,
+triggering immediate concerns about regional stability and oil supply disruptions through
+the Strait of Hormuz. Crude oil prices surged sharply as traders priced in escalation risk,
+while Gold also spiked on safe-haven demand.
+#OIL #XAUUSD
+
+WHY WRONG: Completely rewrote the caption and added AI analysis that was not in the original.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Caption to analyse: {caption}
+
+RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES:
 {{"approved": true/false, "reason": "brief reason", "formatted_text": "...", "confidence": 0.0-1.0}}
 """.strip()
 
@@ -460,6 +536,33 @@ def _strip_asterisks(text: str) -> str:
     return text.replace("*", "") if text else text
 
 
+def _clean_video_caption(text: str) -> str:
+    """
+    Final safety clean for video captions after AI returns the formatted text.
+    Removes any AI-added analysis sentences that sneak through.
+    Strips asterisks, markdown, excessive blank lines.
+    """
+    if not text:
+        return text
+    text = text.replace("*", "")
+    # Remove lines that sound like AI analysis / prediction
+    _ANALYSIS_PATTERNS = re.compile(
+        r"^.*(market[s]?\s+(react|surge|spike|rally|drop|fell|rose)|"
+        r"oil\s+(could|may|might|likely|expected)|"
+        r"gold\s+(could|may|might|likely|expected)|"
+        r"traders\s+(fear|price|react|watch)|"
+        r"supply\s+disruption\s+fear|"
+        r"safe.?haven\s+demand|"
+        r"this\s+(could|may|might)|"
+        r"prices?\s+(could|may|might|are\s+expected)).*$",
+        re.IGNORECASE | re.MULTILINE
+    )
+    text = _ANALYSIS_PATTERNS.sub("", text).strip()
+    # Clean up multiple blank lines left behind
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    return text
+
+
 class AIEngine:
     def __init__(self, gemini_key: str, groq_key: str, channel_category: str):
         self._category = channel_category
@@ -622,9 +725,16 @@ class AIEngine:
 
     async def analyse_video_caption(self, caption: str) -> dict:
         """
-        AI reads and understands the video caption.
-        APPROVE only if: war/conflict that directly moves Gold, Oil, or DXY.
+        AI reads the video caption.
+
+        APPROVE ONLY IF: physical war/strike/missile/airstrike/attack event
+        in a region that directly moves Gold or Oil prices.
         ALL other videos → rejected.
+
+        On approval: preserves the original caption — only removes junk
+        (other channel usernames, URLs, foreign hashtags), adds lead emoji
+        + trend emoji on first line, adds relevant hashtags.
+        Zero AI analysis, predictions, or commentary.
         """
         if not caption or not caption.strip():
             return _reject("Empty video caption.", "no_caption", confidence=1.0)
@@ -639,7 +749,14 @@ class AIEngine:
             verdict["engine"] = "gemini-2.5-flash"
             log.info(f"Video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
             if verdict.get("approved") and verdict.get("formatted_text"):
-                text = verdict["formatted_text"].replace("*", "").strip()
+                # Clean any AI analysis that snuck through
+                text = _clean_video_caption(verdict["formatted_text"])
+                # Re-apply allowed hashtag filter
+                hashtags = re.findall(r"#\w+", text)
+                allowed = [h for h in hashtags if h in ALLOWED_HASHTAGS_SET]
+                text = re.sub(r"#\w+", "", text).strip()
+                if allowed:
+                    text = text + "\n\n" + " ".join(allowed)
                 verdict["formatted_text"] = text
             return verdict
         except Exception as exc:
@@ -653,7 +770,14 @@ class AIEngine:
             verdict["engine"] = "groq-llama4-scout"
             log.info(f"Groq video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
             if verdict.get("approved") and verdict.get("formatted_text"):
-                text = verdict["formatted_text"].replace("*", "").strip()
+                # Clean any AI analysis that snuck through
+                text = _clean_video_caption(verdict["formatted_text"])
+                # Re-apply allowed hashtag filter
+                hashtags = re.findall(r"#\w+", text)
+                allowed = [h for h in hashtags if h in ALLOWED_HASHTAGS_SET]
+                text = re.sub(r"#\w+", "", text).strip()
+                if allowed:
+                    text = text + "\n\n" + " ".join(allowed)
                 verdict["formatted_text"] = text
             return verdict
         except Exception as exc:
