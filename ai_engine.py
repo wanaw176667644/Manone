@@ -164,6 +164,41 @@ RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES — NO TRAILING COMMAS:
 {"approved": true, "reason": "brief reason", "issues": [], "formatted_text": "...", "confidence": 0.9}
 """.strip()
 
+_VIDEO_CAPTION_PROMPT = """
+You are AXIOM INTEL — a Senior Institutional Macro & Geopolitical news editor.
+
+A video has been received. Read the caption below and decide:
+
+APPROVE if the video caption is about:
+- War, military conflict, strikes, attacks, invasions, airstrikes, shelling
+- Geopolitical escalation or ceasefire (Ukraine, Russia, Iran, Israel, Gaza, NATO, etc.)
+- Statements by world leaders (Trump, Putin, Xi, Biden, etc.) about war, sanctions, oil
+- Oil supply disruption, Hormuz strait, OPEC conflict-related news
+- Any breaking geopolitical event that affects markets (Gold, Oil, USD)
+
+REJECT if the caption is about:
+- Technical analysis, chart patterns, buy/sell signals
+- Forex tips, trading advice, predictions
+- Promotions, ads, channel plugs
+- Economic data releases (those are handled separately)
+- Entertainment, sports, unrelated news
+- Empty or vague captions with no clear event
+
+If APPROVED:
+- Write a clean, factual 1-3 sentence post in English
+- Start with a strong relevant emoji (🚨 🌍 ⚔️ 🛢️ 💥 ⚠️ 🏴 🗺️)
+- Add a bold one-line headline summarising the event
+- Then 1-2 sentences of clean factual detail from the caption
+- No forecast, no opinion, no signals, no hashtags
+- Do NOT add signature (added automatically)
+- Plain text only — no asterisks, no markdown bold
+
+Caption: {caption}
+
+RESPOND WITH VALID JSON ONLY:
+{{"approved": true/false, "reason": "brief reason", "formatted_text": "...", "confidence": 0.0-1.0}}
+""".strip()
+
 _SIMILARITY_PROMPT = """
 You are a duplicate news detector. Compare the two stories. If they describe the same real-world event – even if worded differently, in different languages, or with minor spelling mistakes – respond with same_story=true.
 Be aggressive. If any reasonable chance they are the same, mark true.
@@ -529,6 +564,44 @@ class AIEngine:
 
     async def get_be_careful_line(self, event_name: str) -> str:
         return _get_be_careful_line(event_name)
+
+    async def analyse_video_caption(self, caption: str) -> dict:
+        """
+        AI reads and understands the video caption.
+        If war/geopolitical → approves and formats with emoji + clean text.
+        All other videos → rejected with reason.
+        """
+        if not caption or not caption.strip():
+            return _reject("Empty video caption.", "no_caption", confidence=1.0)
+
+        prompt = _VIDEO_CAPTION_PROMPT.format(caption=caption.strip()[:800])
+
+        # Try Gemini first
+        try:
+            verdict = await asyncio.wait_for(
+                self._gemini_call(prompt, None, "image/jpeg"), timeout=30
+            )
+            verdict["engine"] = "gemini-2.5-flash"
+            log.info(f"Video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
+            if verdict.get("approved") and verdict.get("formatted_text"):
+                verdict["formatted_text"] = verdict["formatted_text"].replace("*", "").strip()
+            return verdict
+        except Exception as exc:
+            log.warning(f"Gemini video caption failed ({exc}) — trying Groq …")
+
+        # Fallback to Groq
+        try:
+            verdict = await asyncio.wait_for(
+                self._groq_call(prompt, None, "image/jpeg"), timeout=40
+            )
+            verdict["engine"] = "groq-llama4-scout"
+            log.info(f"Groq video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
+            if verdict.get("approved") and verdict.get("formatted_text"):
+                verdict["formatted_text"] = verdict["formatted_text"].replace("*", "").strip()
+            return verdict
+        except Exception as exc:
+            log.error(f"Both engines failed for video caption: {exc}")
+            return _reject("AI engines unavailable for video caption.", "engine_error", confidence=0.0)
 
     def _build_moderation_prompt(self, text: str) -> str:
         return textwrap.dedent(f"""
