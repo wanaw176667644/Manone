@@ -1,11 +1,12 @@
 """
-ai_engine.py — Final version.
+ai_engine.py — Updated version.
 
-FIXES (this version):
-1. _FF_IMAGE_PROMPT now explicitly tells AI to GROUP same-time events on
-   ONE line with comma-separated names — no splitting by time slot.
-2. FF image prompt reinforced: reject any non-ForexFactory calendar source.
-3. Weekly prompt also updated to group same-time events.
+CHANGES (this version):
+1. Hashtags now displayed with 📊📉📈 emoji line for forex trading channel feel.
+2. System prompt tightened: ONLY news that moves Gold (XAUUSD), Oil, or DXY is approved.
+   News that doesn't affect these three instruments is rejected.
+3. Video prompt updated: war/conflict ONLY if it moves Gold, Oil, or DXY.
+   All other videos including unrelated war news → rejected.
 4. Random 💡 signature 25% of the time.
 5. "Be careful" reminder lines — short, event-specific.
 """
@@ -27,6 +28,9 @@ log = logging.getLogger("ai_engine")
 
 CHANNEL_SIGNATURE = "\n\n[Squad 4xx](https://t.me/Squad_4xx)"
 ALLOWED_HASHTAGS_SET = {"#XAUUSD", "#DXY", "#OIL"}
+
+# Emoji line shown after hashtags on approved posts
+_HASHTAG_EMOJI_LINE = "📊📉📈"
 
 
 def _add_signature(text: str) -> str:
@@ -90,32 +94,52 @@ def _get_be_careful_line(event_name: str) -> str:
 
 
 _SYSTEM_PROMPT = """
-You are AXIOM INTEL — a Senior Institutional Macro & Geopolitical news editor.
+You are AXIOM INTEL — a Senior Institutional Macro & Geopolitical news editor for a FOREX TRADING channel.
+
+THIS CHANNEL TRADES: Gold (XAUUSD) | Oil (WTI/Brent) | US Dollar Index (DXY)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔥 GEOPOLITICAL EXCEPTION (ALWAYS APPROVE)
+🔑 CORE RULE — MARKET IMPACT FILTER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Any statement from a world leader (e.g., Trump, Biden, Putin, Xi) that affects:
-- Oil supply (Hormuz, OPEC, embargo, sanctions)
-- War / conflict escalation
-- Tariffs / trade restrictions
-- Central bank or financial policy changes
-- Gold, USD, or energy markets
-These are HIGH IMPACT geopolitical events, even if posted on social media.
+ONLY approve news that DIRECTLY moves at least one of:
+  • Gold / XAUUSD
+  • Oil / Crude / WTI / Brent
+  • DXY / US Dollar Index
+
+If a piece of news does NOT clearly affect Gold, Oil, or DXY → REJECT IT.
+Do not approve vague or indirect connections. Be strict.
+
+Examples of what to REJECT (even if real news):
+- Stock market news (S&P, Nasdaq, earnings) unless it directly hits DXY/Gold
+- Crypto news
+- Regional economic data not tied to USD, Oil, or Gold
+- Company-specific news
+- Social/political news with no commodity or currency market link
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 GEOPOLITICAL EXCEPTION (APPROVE IF MARKET IMPACT)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Approve geopolitical events ONLY if they directly affect Gold, Oil, or DXY:
+- War / conflict affecting oil-producing regions (Middle East, Russia, Iran, Hormuz)
+- Sanctions or embargoes on oil-exporting nations
+- World leader statements about oil supply, tariffs, USD policy, or gold reserves
+- Conflict escalation that triggers safe-haven demand for Gold
+- Any event that causes a direct flight-to-safety into Gold or Oil spike
+
+Reject geopolitical news that has NO clear link to Gold, Oil, or DXY.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔥 FOMC / CENTRAL BANK EXCEPTION (ALWAYS APPROVE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Any official announcement or news about:
-- Federal Open Market Committee (FOMC)
-- Federal Funds Rate / Interest Rate Decision
-- Fed Chair Powell speech
-- FOMC Statement or Minutes
-These are HIGH IMPACT macroeconomic events. Always approve even if they contain numbers like "rate at 5.25%". Do NOT reject as "forecast" or "commentary".
+Always approve:
+- FOMC decisions, Federal Funds Rate, Fed Chair Powell speeches
+- FOMC statements or minutes
+- Any official central bank rate decision affecting USD
+These always move DXY and Gold. Always approve even with numbers like "rate at 5.25%".
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YOUR ONLY JOB:
-Take the source content, verify its relevance, and format it cleanly.
+Take the source content, verify its relevance to Gold/Oil/DXY, and format it cleanly.
 Do NOT speculate. Do NOT add analysis beyond the facts.
 Do NOT change the meaning.
 
@@ -126,7 +150,8 @@ CRITICAL FORMATTING RULES:
 - Actual released figures (e.g., "came at 2.5%", "rose to 2.5%", "was 2.5%") are ALLOWED.
 - Forecast (expected) and previous values are FORBIDDEN. Never include them.
 - Technical analysis, signals, predictions, opinions are FORBIDDEN.
-- Hashtags: Only use #XAUUSD, #DXY, or #OIL – only those relevant to the story.
+- Hashtags: Use ONLY #XAUUSD, #DXY, or #OIL — only the ones relevant to the story.
+  After the hashtags add a new line with exactly: 📊📉📈
 - Do NOT add the current year at the end of posts.
 - Do NOT add signature (added automatically).
 
@@ -139,7 +164,7 @@ REJECT IF ANY OF THESE APPLY:
 4. ANALYSIS IMG  — Chart screenshots, TA images
 5. WATERMARK     — Another channel logo or username
 6. STALE         — Content older than 18 hours
-7. OFF-TOPIC     — Not about geopolitics, central banks, macro data, Gold, Oil, USD
+7. OFF-TOPIC     — Does not affect Gold, Oil, or DXY
 8. LOW VALUE     — Vague, no specific real-world event
 9. DUPLICATE     — Same story already processed
 10. PREDICTION   — "I think", "expect", "my analysis"
@@ -148,6 +173,7 @@ REJECT IF ANY OF THESE APPLY:
 13. SENTIMENT    — Fear & Greed index, bank sentiment, market mood indicators,
                    "banks are bullish/bearish", "smart money", "COT report opinions",
                    sentiment surveys, positioning reports with opinions
+14. NO IMPACT    — News that does not move Gold, Oil, or DXY
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMAT (if approved):
@@ -157,6 +183,7 @@ FORMAT (if approved):
 [Source content lightly cleaned. 2-4 sentences max.]
 
 [Relevant hashtags: #XAUUSD #DXY #OIL — only those that apply]
+📊📉📈
 
 EMOJI: 🚨 🌍 📊 🏦 🛢️ 🏆 💵 ⚠️ 🗳️
 
@@ -165,31 +192,36 @@ RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES — NO TRAILING COMMAS:
 """.strip()
 
 _VIDEO_CAPTION_PROMPT = """
-You are AXIOM INTEL — a Senior Institutional Macro & Geopolitical news editor.
+You are AXIOM INTEL — a Senior editor for a FOREX TRADING channel that trades Gold (XAUUSD), Oil, and DXY.
 
-A video has been received. Read the caption below and decide:
+A video has been received. Read the caption and decide:
 
-APPROVE if the video caption is about:
-- War, military conflict, strikes, attacks, invasions, airstrikes, shelling
-- Geopolitical escalation or ceasefire (Ukraine, Russia, Iran, Israel, Gaza, NATO, etc.)
-- Statements by world leaders (Trump, Putin, Xi, Biden, etc.) about war, sanctions, oil
-- Oil supply disruption, Hormuz strait, OPEC conflict-related news
-- Any breaking geopolitical event that affects markets (Gold, Oil, USD)
+APPROVE ONLY IF:
+- The video is about WAR or ARMED CONFLICT that directly affects Gold, Oil, or DXY:
+  • Military strikes, airstrikes, missile attacks, shelling, invasions
+  • Conflict in oil-producing regions: Middle East, Iran, Iraq, Russia, Libya, Gulf states
+  • War escalation causing safe-haven Gold demand or Oil supply disruption
+  • Strait of Hormuz threats, OPEC conflict, sanctions on oil exporters
+  • World leader war/military statements that move Oil or Gold prices
 
-REJECT if the caption is about:
+REJECT IF:
+- War or conflict in a region with NO impact on Gold, Oil, or DXY
 - Technical analysis, chart patterns, buy/sell signals
 - Forex tips, trading advice, predictions
 - Promotions, ads, channel plugs
-- Economic data releases (those are handled separately)
+- Economic data releases (handled separately)
 - Entertainment, sports, unrelated news
 - Empty or vague captions with no clear event
+- Political news with no commodity/currency market link
 
 If APPROVED:
 - Write a clean, factual 1-3 sentence post in English
-- Start with a strong relevant emoji (🚨 🌍 ⚔️ 🛢️ 💥 ⚠️ 🏴 🗺️)
+- Start with a strong relevant emoji (🚨 🌍 ⚔️ 🛢️ 💥 ⚠️)
 - Add a bold one-line headline summarising the event
 - Then 1-2 sentences of clean factual detail from the caption
-- No forecast, no opinion, no signals, no hashtags
+- End with the relevant hashtag(s): #XAUUSD and/or #OIL
+- New line after hashtags with exactly: 📊📉📈
+- No forecast, no opinion, no signals
 - Do NOT add signature (added automatically)
 - Plain text only — no asterisks, no markdown bold
 
@@ -221,22 +253,23 @@ Be aggressive: if there is any reasonable chance they are the same, mark same_st
 Respond with JSON: {{"same_story": true, "confidence": 0.0-1.0, "reason": "..."}}
 """
 
-# ── FIXED: AI now groups same-time events on ONE line with comma-separated names
+# ── FF daily image prompt — same-time grouping, Gold/Oil/DXY context ──────────
 _FF_IMAGE_PROMPT = """
-You are analysing a ForexFactory economic calendar screenshot.
+You are analysing a ForexFactory economic calendar screenshot for a forex trading channel
+focused on Gold (XAUUSD), Oil, and DXY.
 
 TODAY'S DATE: {today_date}
 
 STEP 1 — SOURCE VALIDATION (CRITICAL):
 This tool ONLY accepts screenshots from ForexFactory.com.
 Look for "forexfactory.com", the ForexFactory logo, or the exact FF calendar layout.
-If this is any other website's calendar (Investing.com, DailyFX, TradingEconomics, 
+If this is any other website's calendar (Investing.com, DailyFX, TradingEconomics,
 myfxbook, etc.) — immediately respond: {{"approved": false, "reason": "not forexfactory"}}
 
 STEP 2 — DATE CHECK:
 Look at the date shown in the screenshot (header, "Today" label, column header, etc).
 The screenshot must show the SAME month and day as {today_date}.
-IMPORTANT: Ignore formatting differences — "May 1", "May 01", "Fri May 1", "05/01" all 
+IMPORTANT: Ignore formatting differences — "May 1", "May 01", "Fri May 1", "05/01" all
 count as the same date. Only reject if the month OR day is clearly different.
 Do NOT reject just because the year is missing or the format looks different.
 
@@ -253,7 +286,6 @@ CORRECT (same time → one line):
 WRONG (do NOT do this — split lines for same time):
 🔴 3:30 PM | USD: Advance GDP q/q
 🔴 3:30 PM | USD: Core PCE Price Index m/m
-🔴 3:30 PM | USD: Employment Cost Index q/q
 
 STEP 4 — FORMAT:
 - Do NOT include the year in the date line (e.g. "Friday, May 1" — no year).
@@ -284,9 +316,10 @@ If valid ForexFactory today → {{"approved": true, "reason": "valid FF today im
 RESPOND WITH VALID JSON ONLY.
 """.strip()
 
-# ── FIXED: Weekly prompt also groups same-time events
+# ── FF weekly image prompt ─────────────────────────────────────────────────────
 _FF_WEEKLY_IMAGE_PROMPT = """
 You are analysing a ForexFactory.com calendar screenshot for the weekly outlook.
+This is for a forex trading channel focused on Gold (XAUUSD), Oil, and DXY.
 
 SOURCE VALIDATION (CRITICAL):
 Only accept ForexFactory.com screenshots. If this is any other calendar source
@@ -368,15 +401,18 @@ def _validate_and_clean(data: dict) -> dict:
         ).strip()
         data["formatted_text"] = _strip_be_careful(data["formatted_text"])
         text = data["formatted_text"]
+
         if "TODAY'S USD" in text or "WEEKLY HIGH IMPACT" in text:
+            # Calendar posts: strip hashtags entirely (they go in body already)
             text = re.sub(r"#\w+", "", text).strip()
             data["formatted_text"] = text
         else:
+            # Regular posts: filter to allowed hashtags + add 📊📉📈 emoji line
             hashtags = re.findall(r"#\w+", text)
             allowed_hashtags = [h for h in hashtags if h in ALLOWED_HASHTAGS_SET]
             text = re.sub(r"#\w+", "", text).strip()
             if allowed_hashtags:
-                text = text + "\n\n" + " ".join(allowed_hashtags)
+                text = text + "\n\n" + " ".join(allowed_hashtags) + "\n" + _HASHTAG_EMOJI_LINE
             data["formatted_text"] = text
 
     if data.get("approved") and _signal_hit(data.get("formatted_text", "")):
@@ -568,8 +604,8 @@ class AIEngine:
     async def analyse_video_caption(self, caption: str) -> dict:
         """
         AI reads and understands the video caption.
-        If war/geopolitical → approves and formats with emoji + clean text.
-        All other videos → rejected with reason.
+        APPROVE only if: war/conflict that directly moves Gold, Oil, or DXY.
+        ALL other videos → rejected.
         """
         if not caption or not caption.strip():
             return _reject("Empty video caption.", "no_caption", confidence=1.0)
@@ -584,7 +620,11 @@ class AIEngine:
             verdict["engine"] = "gemini-2.5-flash"
             log.info(f"Video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
             if verdict.get("approved") and verdict.get("formatted_text"):
-                verdict["formatted_text"] = verdict["formatted_text"].replace("*", "").strip()
+                text = verdict["formatted_text"].replace("*", "").strip()
+                # Ensure 📊📉📈 line is present after hashtags in approved video posts
+                if re.search(r"#(XAUUSD|OIL|DXY)", text) and _HASHTAG_EMOJI_LINE not in text:
+                    text = text.rstrip() + "\n" + _HASHTAG_EMOJI_LINE
+                verdict["formatted_text"] = text
             return verdict
         except Exception as exc:
             log.warning(f"Gemini video caption failed ({exc}) — trying Groq …")
@@ -597,7 +637,10 @@ class AIEngine:
             verdict["engine"] = "groq-llama4-scout"
             log.info(f"Groq video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
             if verdict.get("approved") and verdict.get("formatted_text"):
-                verdict["formatted_text"] = verdict["formatted_text"].replace("*", "").strip()
+                text = verdict["formatted_text"].replace("*", "").strip()
+                if re.search(r"#(XAUUSD|OIL|DXY)", text) and _HASHTAG_EMOJI_LINE not in text:
+                    text = text.rstrip() + "\n" + _HASHTAG_EMOJI_LINE
+                verdict["formatted_text"] = text
             return verdict
         except Exception as exc:
             log.error(f"Both engines failed for video caption: {exc}")
@@ -606,13 +649,14 @@ class AIEngine:
     def _build_moderation_prompt(self, text: str) -> str:
         return textwrap.dedent(f"""
             DATE (UTC): {_today_str()}
-            CHANNEL FOCUS: {self._category}
+            CHANNEL FOCUS: {self._category} — trades Gold (XAUUSD), Oil, and DXY ONLY
             SOURCE CONTENT:
             \"\"\"
             {text.strip() if text else "(image only — no text)"}
             \"\"\"
-            TASK: Analyse content. If relevant geopolitical/macro news OR actual released economic data, approve and format.
-            If forecast/previous values, signal, TA, meme, off-topic, stale — reject.
+            TASK: Analyse content. Approve ONLY if it directly affects Gold (XAUUSD), Oil, or DXY.
+            If no clear market impact on these three instruments → reject.
+            If forecast/previous values, signal, TA, meme, off-topic, stale → reject.
             Format according to rules. Return JSON.
         """).strip()
 
