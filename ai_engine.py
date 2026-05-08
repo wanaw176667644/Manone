@@ -8,6 +8,9 @@ FIXES (this version):
 3. Weekly prompt also updated to group same-time events.
 4. Random 💡 signature 25% of the time.
 5. "Be careful" reminder lines — short, event-specific.
+6. Hashtags: ONLY #XAUUSD, #OIL, #DXY — no currency pair hashtags.
+   News about EUR, GBP, JPY etc. is approved/rejected normally but
+   receives NO hashtag.
 """
 
 import asyncio
@@ -26,7 +29,86 @@ from groq import AsyncGroq
 log = logging.getLogger("ai_engine")
 
 CHANNEL_SIGNATURE = "\n\n[Squad 4xx](https://t.me/Squad_4xx)"
+
+# ── Allowed hashtags — ONLY these three, nothing else ────────────────────────
 ALLOWED_HASHTAGS_SET = {"#XAUUSD", "#DXY", "#OIL"}
+
+# ── Hashtag keyword maps — CODE decides hashtags, not AI ─────────────────────
+_HASHTAG_XAUUSD_KEYWORDS = [
+    "gold", "xau", "xauusd", "xau/usd", "bullion",
+    "precious metal", "spot gold", "gold price",
+    "gold drops", "gold falls", "gold rises", "gold surges",
+    "gold crashes", "gold spike", "gold jumps", "gold climbs",
+    "gold hits", "gold at $", "gold to $",
+]
+
+_HASHTAG_OIL_KEYWORDS = [
+    "oil", "crude", "brent", "wti", "opec", "barrel",
+    "petroleum", "energy supply", "hormuz", "oil supply",
+    "oil price", "oil drops", "oil falls", "oil rises",
+    "oil surges", "oil crashes", "oil spike", "oil jumps",
+    "oil collapses", "oil at $", "oil to $",
+]
+
+_HASHTAG_DXY_KEYWORDS = [
+    "dxy", "dollar index", "usd index", "us dollar",
+    "dollar surges", "dollar falls", "dollar drops",
+    "dollar strengthens", "dollar weakens", "dollar rises",
+    "dollar jumps", "dollar collapses", "dollar climbs",
+    "dxy falls", "dxy rises", "dxy drops", "dxy jumps",
+    "greenback", "dollar at ", "dollar to ",
+    "tariff", "tariffs", "trade war", "fed rate",
+    "fomc", "federal funds", "interest rate decision",
+    "powell", "federal reserve",
+]
+
+def _detect_hashtags(text: str) -> str:
+    """
+    Hard keyword detection — CODE decides hashtags, not AI.
+    ONLY three hashtags are ever used: #XAUUSD, #OIL, #DXY.
+    All other currencies (EUR, GBP, JPY, etc.) get NO hashtag.
+    Calendar posts → never add hashtags (returns "").
+    """
+    if not text:
+        return ""
+    if "TODAY'S USD" in text or "WEEKLY HIGH IMPACT" in text:
+        return ""
+
+    lower = text.lower()
+    tags = []
+
+    if any(kw in lower for kw in _HASHTAG_XAUUSD_KEYWORDS):
+        tags.append("#XAUUSD")
+    if any(kw in lower for kw in _HASHTAG_OIL_KEYWORDS):
+        tags.append("#OIL")
+    if any(kw in lower for kw in _HASHTAG_DXY_KEYWORDS):
+        tags.append("#DXY")
+
+    return " ".join(tags)
+
+
+def _apply_hashtags(text: str) -> str:
+    """
+    Strip ALL existing hashtags from text (AI-generated or otherwise),
+    detect correct ones from content keywords, append them.
+    This is the single source of truth for hashtags — called on every post.
+    """
+    if not text:
+        return text
+
+    # Calendar posts — strip hashtags, never add any
+    if "TODAY'S USD" in text or "WEEKLY HIGH IMPACT" in text:
+        return re.sub(r"#\w+", "", text).strip()
+
+    # Detect correct hashtags from FULL text before stripping
+    hashtags = _detect_hashtags(text)
+
+    # Strip ALL existing hashtags
+    clean = re.sub(r"#\w+", "", text).strip()
+
+    if hashtags:
+        return clean + "\n\n" + hashtags
+    return clean
 
 
 def _add_signature(text: str) -> str:
@@ -60,12 +142,9 @@ def _strip_be_careful(text: str) -> str:
 def _strip_predictions(text: str) -> str:
     """
     Hard-strip any AI-added prediction/opinion sentences from formatted text.
-    Removes full sentences containing prediction language so the post reads
-    exactly like the source — factual only.
     """
     if not text:
         return text
-    # Prediction phrases that should NEVER appear in output
     _PREDICT_RE = re.compile(
         r'[^.!?\n]*\b('
         r'could\s+(go|rise|fall|drop|reach|push|move|head)|'
@@ -82,15 +161,12 @@ def _strip_predictions(text: str) -> str:
         re.IGNORECASE
     )
     cleaned = _PREDICT_RE.sub('', text).strip()
-    # Clean up any double blank lines left behind
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
     return cleaned
 
 
 def _get_be_careful_line(event_name: str) -> str:
-    """
-    Short, event-specific 'be careful' line for reminders.
-    """
+    """Short, event-specific 'be careful' line for reminders."""
     n = event_name.lower()
     if any(kw in n for kw in ["fomc", "federal funds", "interest rate", "fed chair", "powell", "federal reserve"]):
         return "⚠️ Fed decisions move everything. Be careful — no new trades during the release."
@@ -174,7 +250,22 @@ CRITICAL FORMATTING RULES:
   Examples: "fell 2.3%", "dropped to $2,980", "surged to 3,200", "crashed 5%"
 - Forecast (expected) and previous values are FORBIDDEN. Never include them.
 - Technical analysis, signals, AI predictions, opinions are FORBIDDEN.
-- Hashtags: Only use #XAUUSD, #DXY, or #OIL — only those relevant to the story.
+- Hashtags: ONLY use #XAUUSD, #DXY, or #OIL — and ONLY when the news
+  DIRECTLY affects that market. Ask yourself:
+  → Does this news move Gold prices?   → add #XAUUSD
+  → Does this news move Oil prices?    → add #OIL
+  → Does this news move USD/DXY?       → add #DXY
+  If the news is about EUR, GBP, JPY, AUD, stocks, crypto, etc.
+  and does NOT directly affect Gold, Oil, or USD — add NO hashtag.
+  Examples:
+  "ECB holds rates, EUR/USD drops"          → NO hashtag (EUR story, no Gold/Oil/DXY effect)
+  "BOE cuts rates, pound falls"             → NO hashtag (GBP story only)
+  "FOMC raises rates, DXY surges"           → #DXY (directly moves USD)
+  "Tariffs on China, oil supply at risk"    → #OIL (directly affects oil)
+  "War escalation, gold surges as safe haven" → #XAUUSD (directly moves gold)
+  "NFP beats, dollar strengthens, gold drops" → #DXY #XAUUSD (affects both)
+  "Iran sanctions tighten, crude jumps"     → #OIL
+  "Fed signals no cuts, DXY and gold react" → #DXY #XAUUSD
 - Do NOT add the current year at the end of posts.
 - Do NOT add signature (added automatically).
 - Post must read EXACTLY like the source — just cleaned and emoji-formatted.
@@ -206,8 +297,6 @@ FORMAT (if approved):
 [EMOJI] [SHORT FACTUAL HEADLINE — one line, exactly what happened]
 
 [Source content lightly cleaned. 2-4 sentences max. No added words.]
-
-[Relevant hashtags: #XAUUSD #DXY #OIL — only those that apply]
 
 EMOJIS TO USE:
 📉 drops / falls / crashes / declines / collapses
@@ -327,7 +416,6 @@ Be aggressive: if there is any reasonable chance they are the same, mark same_st
 Respond with JSON: {{"same_story": true, "confidence": 0.0-1.0, "reason": "..."}}
 """
 
-# ── FIXED: AI now groups same-time events on ONE line with comma-separated names
 _FF_IMAGE_PROMPT = """
 You are analysing a ForexFactory economic calendar screenshot.
 
@@ -390,7 +478,6 @@ If valid ForexFactory today → {{"approved": true, "reason": "valid FF today im
 RESPOND WITH VALID JSON ONLY.
 """.strip()
 
-# ── FIXED: Weekly prompt also groups same-time events
 _FF_WEEKLY_IMAGE_PROMPT = """
 You are analysing a ForexFactory.com calendar screenshot for the weekly outlook.
 
@@ -475,16 +562,9 @@ def _validate_and_clean(data: dict) -> dict:
         data["formatted_text"] = _strip_be_careful(data["formatted_text"])
         data["formatted_text"] = _strip_predictions(data["formatted_text"])
         text = data["formatted_text"]
-        if "TODAY'S USD" in text or "WEEKLY HIGH IMPACT" in text:
-            text = re.sub(r"#\w+", "", text).strip()
-            data["formatted_text"] = text
-        else:
-            hashtags = re.findall(r"#\w+", text)
-            allowed_hashtags = [h for h in hashtags if h in ALLOWED_HASHTAGS_SET]
-            text = re.sub(r"#\w+", "", text).strip()
-            if allowed_hashtags:
-                text = text + "\n\n" + " ".join(allowed_hashtags)
-            data["formatted_text"] = text
+        # Replace ALL hashtag logic with hard keyword detection
+        data["formatted_text"] = _apply_hashtags(text)
+        log.debug(f"Hashtags applied: {_detect_hashtags(text) or '(none)'}")
 
     if data.get("approved") and _signal_hit(data.get("formatted_text", "")):
         log.warning("Signal keyword in output — hard reject.")
@@ -674,22 +754,8 @@ class AIEngine:
 
     async def analyse_video(self, caption: str,
                             frames: Optional[List[bytes]] = None) -> dict:
-        """
-        Full video analysis — two-stage:
-
-        STAGE 1: Caption only (fast, no image cost).
-            - If caption is clear war/geopolitical → approve immediately.
-            - If caption is clearly off-topic (signal, promo) → reject immediately.
-            - If caption is empty, vague, or ambiguous → go to Stage 2.
-
-        STAGE 2: Visual frame analysis (only if Stage 1 is uncertain).
-            - Send extracted frames + caption to Gemini Vision.
-            - AI looks at actual video frames to confirm war/conflict content.
-            - Approve or reject based on visual evidence + caption together.
-        """
         caption = (caption or "").strip()
 
-        # ── STAGE 1: Caption analysis ──────────────────────────────────────
         log.info(f"🎥 Video Stage 1 — caption analysis | caption={caption[:80]!r}")
 
         if caption:
@@ -700,7 +766,6 @@ class AIEngine:
                 conf = stage1.get("confidence", 0.5)
                 approved = stage1.get("approved", False)
 
-                # High confidence either way → done, no need for frames
                 if conf >= 0.80:
                     log.info(f"Stage 1 high-confidence → approved={approved} conf={conf:.2f} (skipping frames)")
                     if approved and stage1.get("formatted_text"):
@@ -714,7 +779,6 @@ class AIEngine:
         else:
             log.info("No caption — going straight to visual frame analysis")
 
-        # ── STAGE 2: Visual frame analysis ────────────────────────────────
         if not frames:
             log.info("No frames available for Stage 2 — rejecting (no caption + no frames)")
             return _reject("No caption and no frames to analyse.", "no_content", confidence=1.0)
@@ -722,7 +786,6 @@ class AIEngine:
         log.info(f"🎥 Video Stage 2 — visual analysis | frames={len(frames)}")
         prompt = _VIDEO_VISUAL_PROMPT.format(caption=caption or "(no caption)")
 
-        # Build parts: up to 4 frames + prompt
         parts = []
         for frame_bytes in frames[:4]:
             parts.append({
@@ -733,7 +796,6 @@ class AIEngine:
             })
         parts.append(prompt)
 
-        # Try Gemini Vision
         try:
             loop = asyncio.get_event_loop()
             resp = await asyncio.wait_for(
@@ -754,7 +816,6 @@ class AIEngine:
         except Exception as exc:
             log.warning(f"Stage 2 Gemini Vision failed ({exc}) — trying Groq …")
 
-        # Fallback: Groq with frames as image_url
         try:
             content = []
             for frame_bytes in frames[:4]:
@@ -785,7 +846,6 @@ class AIEngine:
     async def _try_engines_text(self, prompt: str,
                                 timeout_gemini: int = 30,
                                 timeout_groq: int = 40) -> Optional[dict]:
-        """Try Gemini then Groq for a text-only prompt. Returns None if both fail."""
         try:
             result = await asyncio.wait_for(
                 self._gemini_call(prompt, None, "image/jpeg"), timeout=timeout_gemini
@@ -897,5 +957,6 @@ def _build_post_body(text: str) -> str:
         lines[i] = re.sub(r'\b\d{4}\b', '', lines[i])
     text = '\n'.join(lines)
     text = re.sub(r'\n\s*\n', '\n\n', text).strip()
+    text = _apply_hashtags(text)
     text = _add_signature(text)
     return text
