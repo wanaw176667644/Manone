@@ -1,19 +1,13 @@
 """
-ai_engine.py — Fixed version.
+ai_engine.py — Final version.
 
-CHANGES (this version):
-1. _VIDEO_CAPTION_PROMPT completely rewritten:
-   - AI preserves the ORIGINAL caption language — no rewriting
-   - Only removes: other channel usernames, URLs, foreign-channel hashtags
-   - Adds ONE lead emoji at the start + trend emoji at end of first line only
-   - Zero AI analysis, predictions, or commentary allowed
-   - ONLY approves: physical war events (missile, strike, airstrike, attack, explosion)
-     in regions that directly affect Oil or Gold prices
-2. Trend emoji (📈 📉 📊) placed INLINE in the headline by the AI, not as a footer line.
-3. Hashtags remain #XAUUSD / #DXY / #OIL — no trailing emoji line after hashtags.
-4. System prompt tightened: ONLY news that moves Gold (XAUUSD), Oil, or DXY is approved.
-5. Random 💡 signature 25% of the time.
-6. "Be careful" reminder lines — short, event-specific.
+FIXES (this version):
+1. _FF_IMAGE_PROMPT now explicitly tells AI to GROUP same-time events on
+   ONE line with comma-separated names — no splitting by time slot.
+2. FF image prompt reinforced: reject any non-ForexFactory calendar source.
+3. Weekly prompt also updated to group same-time events.
+4. Random 💡 signature 25% of the time.
+5. "Be careful" reminder lines — short, event-specific.
 """
 
 import asyncio
@@ -24,7 +18,7 @@ import random
 import re
 import textwrap
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List
 
 import google.generativeai as genai
 from groq import AsyncGroq
@@ -63,6 +57,36 @@ def _strip_be_careful(text: str) -> str:
     return re.sub(r'\n?Be careful[^\n]*\n?', '', text, flags=re.IGNORECASE).strip()
 
 
+def _strip_predictions(text: str) -> str:
+    """
+    Hard-strip any AI-added prediction/opinion sentences from formatted text.
+    Removes full sentences containing prediction language so the post reads
+    exactly like the source — factual only.
+    """
+    if not text:
+        return text
+    # Prediction phrases that should NEVER appear in output
+    _PREDICT_RE = re.compile(
+        r'[^.!?\n]*\b('
+        r'could\s+(go|rise|fall|drop|reach|push|move|head)|'
+        r'may\s+(lead|push|cause|result|trigger|move)|'
+        r'might\s+(rise|fall|drop|push|move)|'
+        r'this\s+(suggests?|indicates?|signals?|means?)|'
+        r'suggesting\b|indicating\b|implying\b|'
+        r'watch\s+for\b|heading\s+(to|toward)|'
+        r'next\s+(move|target|level)|'
+        r'bulls?\s+(could|may|might)|bears?\s+(could|may|might)|'
+        r'bullish\s+(momentum|signal|outlook)|'
+        r'bearish\s+(momentum|signal|outlook)'
+        r')[^.!?\n]*[.!?\n]?',
+        re.IGNORECASE
+    )
+    cleaned = _PREDICT_RE.sub('', text).strip()
+    # Clean up any double blank lines left behind
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+    return cleaned
+
+
 def _get_be_careful_line(event_name: str) -> str:
     """
     Short, event-specific 'be careful' line for reminders.
@@ -96,234 +120,189 @@ def _get_be_careful_line(event_name: str) -> str:
 
 
 _SYSTEM_PROMPT = """
-You are AXIOM INTEL — a Senior Institutional Macro & Geopolitical news editor for a FOREX TRADING channel.
-
-THIS CHANNEL TRADES: Gold (XAUUSD) | Oil (WTI/Brent) | US Dollar Index (DXY)
+You are AXIOM INTEL — a Senior Institutional Macro & Geopolitical news editor.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔑 CORE RULE — MARKET IMPACT FILTER
+🔥 GEOPOLITICAL EXCEPTION (ALWAYS APPROVE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ONLY approve news that DIRECTLY moves at least one of:
-  • Gold / XAUUSD
-  • Oil / Crude / WTI / Brent
-  • DXY / US Dollar Index
-
-If a piece of news does NOT clearly affect Gold, Oil, or DXY → REJECT IT.
-Do not approve vague or indirect connections. Be strict.
-
-Examples of what to REJECT (even if real news):
-- Stock market news (S&P, Nasdaq, earnings) unless it directly hits DXY/Gold
-- Crypto news
-- Regional economic data not tied to USD, Oil, or Gold
-- Company-specific news
-- Social/political news with no commodity or currency market link
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔥 GEOPOLITICAL EXCEPTION (APPROVE IF MARKET IMPACT)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Approve geopolitical events ONLY if they directly affect Gold, Oil, or DXY:
-- War / conflict affecting oil-producing regions (Middle East, Russia, Iran, Hormuz)
-- Sanctions or embargoes on oil-exporting nations
-- World leader statements about oil supply, tariffs, USD policy, or gold reserves
-- Conflict escalation that triggers safe-haven demand for Gold
-- Any event that causes a direct flight-to-safety into Gold or Oil spike
-
-Reject geopolitical news that has NO clear link to Gold, Oil, or DXY.
+Any statement from a world leader (e.g., Trump, Biden, Putin, Xi) that affects:
+- Oil supply (Hormuz, OPEC, embargo, sanctions)
+- War / conflict escalation
+- Tariffs / trade restrictions
+- Central bank or financial policy changes
+- Gold, USD, or energy markets
+These are HIGH IMPACT geopolitical events, even if posted on social media.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔥 FOMC / CENTRAL BANK EXCEPTION (ALWAYS APPROVE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Always approve:
-- FOMC decisions, Federal Funds Rate, Fed Chair Powell speeches
-- FOMC statements or minutes
-- Any official central bank rate decision affecting USD
-These always move DXY and Gold. Always approve even with numbers like "rate at 5.25%".
+Any official announcement or news about:
+- Federal Open Market Committee (FOMC)
+- Federal Funds Rate / Interest Rate Decision
+- Fed Chair Powell speech
+- FOMC Statement or Minutes
+These are HIGH IMPACT macroeconomic events. Always approve even if they contain
+numbers like "rate at 5.25%". Do NOT reject as "forecast" or "commentary".
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 MARKET MOVE NEWS (ALWAYS APPROVE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Any factual report of an actual price move, drop, rise, or volatility event:
+- Gold drops / rises / spikes / crashes / surges (e.g. "Gold drops $50", "XAU hits 3200")
+- Oil drops / rises / collapses (e.g. "WTI drops 3%", "Brent crude surges")
+- USD strengthens / weakens (e.g. "DXY falls to 100", "Dollar surges on jobs data")
+- Stock market drops / rises (e.g. "S&P500 falls 2%", "Nasdaq drops on rate fears")
+- Crypto moves that affect macro (e.g. "Bitcoin crashes 10%")
+- Any market that dropped 📉, rose 📈, or became volatile 📊
+These are FACTUAL MARKET EVENTS — always approve if the move already happened.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YOUR ONLY JOB:
-Take the source content, verify its relevance to Gold/Oil/DXY, and format it cleanly.
-Do NOT speculate. Do NOT add analysis beyond the facts.
-Do NOT change the meaning.
+Take the source content EXACTLY as it is, verify its relevance, clean it lightly.
+COPY the facts from the source. Do NOT add your own words or analysis.
+Do NOT change the meaning. Do NOT predict what will happen next.
+Do NOT add commentary about what the move means.
 
 CRITICAL FORMATTING RULES:
 - DO NOT use asterisks (*) or any markdown bolding
 - Use ONLY plain text and emojis
 - NO NOTE line. NO MARKET STATUS. NO commentary line.
-- Actual released figures (e.g., "came at 2.5%", "rose to 2.5%", "was 2.5%") are ALLOWED.
+- Use 📉 emoji for drops/falls/crashes
+- Use 📈 emoji for rises/surges/gains
+- Use 📊 emoji for volatility/mixed/range moves
+- Actual released figures and actual price moves are ALLOWED.
+  Examples: "fell 2.3%", "dropped to $2,980", "surged to 3,200", "crashed 5%"
 - Forecast (expected) and previous values are FORBIDDEN. Never include them.
-- Technical analysis, signals, predictions, opinions are FORBIDDEN.
-- Hashtags: Use ONLY #XAUUSD, #DXY, or #OIL — only the ones relevant to the story.
+- Technical analysis, signals, AI predictions, opinions are FORBIDDEN.
+- Hashtags: Only use #XAUUSD, #DXY, or #OIL — only those relevant to the story.
 - Do NOT add the current year at the end of posts.
 - Do NOT add signature (added automatically).
-
-TREND EMOJI RULE — CRITICAL:
-Place ONE trend emoji at the END of the headline (first line), chosen by price direction:
-  📈 — price rising, hitting highs, surging, gaining, jumping
-  📉 — price dropping, falling, declining, hitting lows, crashing
-  📊 — volatile, mixed, uncertain, no clear direction, whipsaw
-
-EXAMPLES:
-  Gold hits record high above $3,400 📈
-  Oil drops sharply on OPEC supply fears 📉
-  Dollar volatile after Fed signals caution 📊
-  Iran strikes Israeli base, Oil spikes 📈
-  US CPI cools, Gold rallies 📈
-  Gold slides on risk-on sentiment 📉
-
-Do NOT use 📈 📉 📊 anywhere else in the post — only in the headline.
+- Post must read EXACTLY like the source — just cleaned and emoji-formatted.
+  Do NOT add words like "this could", "may lead to", "suggesting", "indicating".
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REJECT IF ANY OF THESE APPLY:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. SIGNALS       — Buy/Sell/Long/Short/Entry/TP/SL/price targets
-2. CHART / TA    — Technical analysis, patterns, indicators
+2. CHART / TA    — Technical analysis, patterns, indicators, support/resistance
 3. MEME          — Memes, jokes, informal content
 4. ANALYSIS IMG  — Chart screenshots, TA images
 5. WATERMARK     — Another channel logo or username
 6. STALE         — Content older than 18 hours
-7. OFF-TOPIC     — Does not affect Gold, Oil, or DXY
-8. LOW VALUE     — Vague, no specific real-world event
+7. OFF-TOPIC     — Not about geopolitics, central banks, macro data, Gold, Oil, USD,
+                   or a real market move event
+8. LOW VALUE     — Vague, no specific real-world event or price
 9. DUPLICATE     — Same story already processed
-10. PREDICTION   — "I think", "expect", "my analysis"
-11. COMMENTARY   — Personal views, market opinions
+10. PREDICTION   — "I think", "expect", "my analysis", "could go to", "might reach",
+                   "target", "next move", "watch for", "heading to"
+11. COMMENTARY   — Personal views, market opinions, "this is bullish/bearish"
 12. FORECAST/PREVIOUS — Any mention of "forecast", "expected", "previous" values
-13. SENTIMENT    — Fear & Greed index, bank sentiment, market mood indicators,
-                   "banks are bullish/bearish", "smart money", "COT report opinions",
-                   sentiment surveys, positioning reports with opinions
-14. NO IMPACT    — News that does not move Gold, Oil, or DXY
+13. SENTIMENT    — Fear & Greed index, bank sentiment, "smart money", COT opinions,
+                   "banks are bullish/bearish", sentiment surveys
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMAT (if approved):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[LEAD EMOJI] [SHORT ENGLISH HEADLINE — factual, ends with trend emoji 📈 📉 or 📊]
+[EMOJI] [SHORT FACTUAL HEADLINE — one line, exactly what happened]
 
-[Source content lightly cleaned. 2-4 sentences max.]
+[Source content lightly cleaned. 2-4 sentences max. No added words.]
 
 [Relevant hashtags: #XAUUSD #DXY #OIL — only those that apply]
 
-LEAD EMOJI (pick one that fits the story): 🚨 🌍 🏦 🛢️ 🏆 💵 ⚠️ 🗳️
+EMOJIS TO USE:
+📉 drops / falls / crashes / declines / collapses
+📈 rises / surges / gains / jumps / climbs
+📊 volatile / swings / mixed / range-bound
+🚨 breaking / urgent geopolitical / rate decision
+🌍 global / geopolitical
+🏦 central bank / Fed / ECB
+🛢️ oil / energy
+💵 dollar / DXY
+⚠️ warning / risk event
+🗳️ election / political
 
 RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES — NO TRAILING COMMAS:
 {"approved": true, "reason": "brief reason", "issues": [], "formatted_text": "...", "confidence": 0.9}
 """.strip()
 
-# ── VIDEO CAPTION PROMPT — FIXED ──────────────────────────────────────────────
-# Core principle: PRESERVE original caption. Do NOT rewrite. Do NOT add analysis.
-# Only clean junk, add one lead emoji + trend emoji on first line, add hashtag.
 _VIDEO_CAPTION_PROMPT = """
-You are a strict content filter for a FOREX TRADING channel (Gold, Oil, DXY).
+You are AXIOM INTEL — a Senior Institutional Macro & Geopolitical news editor.
 
-A video has been received. Read the caption carefully and decide.
+A video has been received. Read the caption below and decide.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-APPROVE ONLY IF — ALL conditions must be true:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. The caption describes a REAL, PHYSICAL military/war event:
-   - Missile strike / airstrike / air strike / bombing
-   - Military attack / armed assault / explosion at a military target
-   - Direct armed invasion / shelling / rocket fire
-   - Naval or aerial strike on infrastructure
+APPROVE if the caption is about any of these FACTUAL events:
+- War, military conflict, strikes, attacks, airstrikes, shelling, invasion
+- Geopolitical escalation or ceasefire (Ukraine, Russia, Iran, Israel, Gaza, NATO)
+- World leader statements about war, sanctions, oil, tariffs, trade
+- Oil supply disruption, Hormuz, OPEC conflict-related
+- Gold drops 📉, rises 📈, crashes, surges — with actual price or % stated
+- Oil drops 📉, rises 📈, collapses, spikes — with actual price or % stated
+- USD/DXY drops 📉, rises 📈 — with actual move stated
+- Any market that already moved — drop, rise, or volatile swing
+- Breaking macro event that already happened
 
-2. The event is in a region that directly impacts Oil or Gold prices:
-   - Middle East (Iran, Iraq, Israel, Gaza, Lebanon, Yemen, Syria)
-   - Gulf region (Saudi Arabia, UAE, Kuwait, Strait of Hormuz)
-   - Russia / Ukraine (affects Oil supply and Gold safe-haven)
-   - Any major oil-producing or oil-transit region
+REJECT if the caption is about:
+- Trading signals, buy/sell advice, TP/SL levels
+- Predictions — "gold could go to", "I think price will", "watch for", "target"
+- Analyst opinions — "bullish", "bearish", "support/resistance"
+- Promotions, ads, channel plugs
+- Memes, jokes, entertainment
+- Vague captions with no specific event or price move
 
-REJECT if ANY of these apply:
-- Only political tension, diplomatic crisis, or sanctions — no physical strike
-- Protests, demonstrations, civil unrest with no military action
-- Economic news, data, or market analysis
-- Predictions, opinions, or "could impact" language
-- Strike or attack outside an Oil/Gold-relevant region
-- Vague or empty captions with no clear event
-- Channel promotions, ads, trading signals
+If APPROVED:
+- Use 📉 for drops/falls/crashes, 📈 for rises/surges, 📊 for volatility
+- Use 🚨 for breaking geopolitical/war news
+- One clear factual headline — EXACTLY what the source said, cleaned
+- 1-2 sentences of factual detail — copied from caption, not invented
+- NO prediction words: "could", "may", "might", "suggesting", "indicating"
+- No forecast, no opinion, no signals, no hashtags
+- Do NOT add signature (added automatically)
+- Plain text only — no asterisks, no markdown bold
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IF APPROVED — FORMATTING RULES (CRITICAL):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Caption: {caption}
 
-YOUR JOB IS TO CLEAN — NOT TO REWRITE.
-
-Step 1 — REMOVE only:
-  - Other Telegram channel usernames (e.g. @SomeChannel, t.me/SomeChannel)
-  - Raw URLs (http://, https://)
-  - Hashtags from other channels (keep #OIL #XAUUSD if already there, remove all others)
-  - Excessive repeated emojis (keep max 1-2 per line)
-  - "forwarded from" lines
-
-Step 2 — KEEP everything else exactly as written:
-  - The original words, sentences, and structure
-  - Numbers, locations, names
-  - The original emojis (within reason)
-  - Short sentences already in the caption
-
-Step 3 — ADD at the very beginning:
-  - ONE lead emoji that fits the event: 🚨 ⚔️ 🛢️ 🌍
-  - Only if the caption does not already start with a strong relevant emoji
-
-Step 4 — ADD at the end of the FIRST LINE only:
-  - ONE trend emoji based on market direction mentioned or implied:
-    📈 if Oil or Gold spiked / surged / jumped up
-    📉 if Oil or Gold dropped / fell / crashed
-    📊 if direction is unclear, mixed, or not mentioned
-
-Step 5 — ADD at the end of the full post:
-  - Relevant hashtag(s): #OIL and/or #XAUUSD (only the ones that apply)
-  - Do NOT add #DXY for war/conflict posts unless USD is directly mentioned
-
-Step 6 — DO NOT ADD:
-  - Any analysis ("markets reacted", "this could push Oil higher")
-  - Any prediction ("Gold may rise", "Oil likely to spike")
-  - Any opinion or commentary
-  - "Be careful" lines (added automatically by the system)
-  - Signature (added automatically)
-  - Any sentence that was not in the original caption
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-EXAMPLES:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-EXAMPLE 1:
-Caption input:
-"🔴 BREAKING: Iran launched ballistic missiles at a US military base in Iraq.
-Multiple explosions reported near Baghdad. @NewsChannel24 t.me/NewsChannel24"
-
-Correct output:
-🚨 BREAKING: Iran launched ballistic missiles at a US military base in Iraq. 📈
-Multiple explosions reported near Baghdad.
-
-#OIL #XAUUSD
-
-EXAMPLE 2:
-Caption input:
-"Israeli airstrikes hit Hezbollah weapons depots in southern Lebanon.
-Heavy smoke reported. #BreakingNews @warzone_updates"
-
-Correct output:
-🚨 Israeli airstrikes hit Hezbollah weapons depots in southern Lebanon. 📊
-Heavy smoke reported.
-
-#OIL #XAUUSD
-
-EXAMPLE 3 (WRONG — do NOT do this):
-Caption input: "Iran fires missiles at Iraq base."
-Wrong output:
-🚨 Iran Launches Missile Strike on US Base in Iraq — Oil Surges on Supply Fears 📈
-Iran has fired a volley of ballistic missiles at a United States military installation in Iraq,
-triggering immediate concerns about regional stability and oil supply disruptions through
-the Strait of Hormuz. Crude oil prices surged sharply as traders priced in escalation risk,
-while Gold also spiked on safe-haven demand.
-#OIL #XAUUSD
-
-WHY WRONG: Completely rewrote the caption and added AI analysis that was not in the original.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Caption to analyse: {caption}
-
-RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES:
+RESPOND WITH VALID JSON ONLY:
 {{"approved": true/false, "reason": "brief reason", "formatted_text": "...", "confidence": 0.0-1.0}}
+""".strip()
+
+_VIDEO_VISUAL_PROMPT = """
+You are AXIOM INTEL — a Senior Institutional Macro & Geopolitical news editor.
+
+You are looking at frames extracted from a video. The video caption is also provided.
+
+CAPTION: {caption}
+
+YOUR JOB:
+Look at the frames AND read the caption together.
+
+APPROVE if you see OR the caption describes any FACTUAL event:
+- Active combat, explosions, fire, smoke from strikes
+- Military vehicles, troops, weapons, missile launches
+- Drone strikes, airstrikes, artillery shelling
+- Destroyed buildings, bombed areas, war damage
+- Breaking news chyron on screen about war/conflict/market crash
+- World leaders making statements about war, sanctions, oil, tariffs
+- Oil infrastructure under threat or attack
+- News ticker showing actual price drop 📉 or surge 📈
+- Any market move already confirmed on screen (price shown)
+
+REJECT if:
+- Frames show charts with TA indicators, drawings, support/resistance lines
+- Someone talking to camera giving trading predictions or signals
+- Promotional content, ads
+- No visual war/conflict/market-move evidence AND caption is vague or empty
+
+If APPROVED — write a clean formatted post:
+- Use 📉 for drops/falls/crashes, 📈 for rises/surges, 📊 for volatility/swings
+- Use 🚨 for breaking war/geopolitical news, 💥 for explosions/strikes
+- One clear factual headline — exactly what happened
+- 1-2 sentences of factual detail from caption + what you see in frames
+- NO prediction words: "could", "may", "might", "suggesting", "indicating"
+- Plain text only — no asterisks, no bold, no hashtags
+- Do NOT add signature (added automatically)
+
+RESPOND WITH VALID JSON ONLY:
+{{"approved": true/false, "reason": "brief reason", "formatted_text": "...", "confidence": 0.0-1.0, "visual_confirmed": true/false}}
 """.strip()
 
 _SIMILARITY_PROMPT = """
@@ -348,23 +327,22 @@ Be aggressive: if there is any reasonable chance they are the same, mark same_st
 Respond with JSON: {{"same_story": true, "confidence": 0.0-1.0, "reason": "..."}}
 """
 
-# ── FF daily image prompt — same-time grouping, Gold/Oil/DXY context ──────────
+# ── FIXED: AI now groups same-time events on ONE line with comma-separated names
 _FF_IMAGE_PROMPT = """
-You are analysing a ForexFactory economic calendar screenshot for a forex trading channel
-focused on Gold (XAUUSD), Oil, and DXY.
+You are analysing a ForexFactory economic calendar screenshot.
 
 TODAY'S DATE: {today_date}
 
 STEP 1 — SOURCE VALIDATION (CRITICAL):
 This tool ONLY accepts screenshots from ForexFactory.com.
 Look for "forexfactory.com", the ForexFactory logo, or the exact FF calendar layout.
-If this is any other website's calendar (Investing.com, DailyFX, TradingEconomics,
+If this is any other website's calendar (Investing.com, DailyFX, TradingEconomics, 
 myfxbook, etc.) — immediately respond: {{"approved": false, "reason": "not forexfactory"}}
 
 STEP 2 — DATE CHECK:
 Look at the date shown in the screenshot (header, "Today" label, column header, etc).
 The screenshot must show the SAME month and day as {today_date}.
-IMPORTANT: Ignore formatting differences — "May 1", "May 01", "Fri May 1", "05/01" all
+IMPORTANT: Ignore formatting differences — "May 1", "May 01", "Fri May 1", "05/01" all 
 count as the same date. Only reject if the month OR day is clearly different.
 Do NOT reject just because the year is missing or the format looks different.
 
@@ -381,6 +359,7 @@ CORRECT (same time → one line):
 WRONG (do NOT do this — split lines for same time):
 🔴 3:30 PM | USD: Advance GDP q/q
 🔴 3:30 PM | USD: Core PCE Price Index m/m
+🔴 3:30 PM | USD: Employment Cost Index q/q
 
 STEP 4 — FORMAT:
 - Do NOT include the year in the date line (e.g. "Friday, May 1" — no year).
@@ -411,10 +390,9 @@ If valid ForexFactory today → {{"approved": true, "reason": "valid FF today im
 RESPOND WITH VALID JSON ONLY.
 """.strip()
 
-# ── FF weekly image prompt ─────────────────────────────────────────────────────
+# ── FIXED: Weekly prompt also groups same-time events
 _FF_WEEKLY_IMAGE_PROMPT = """
 You are analysing a ForexFactory.com calendar screenshot for the weekly outlook.
-This is for a forex trading channel focused on Gold (XAUUSD), Oil, and DXY.
 
 SOURCE VALIDATION (CRITICAL):
 Only accept ForexFactory.com screenshots. If this is any other calendar source
@@ -495,14 +473,12 @@ def _validate_and_clean(data: dict) -> dict:
             r"📌\s*(NOTE|MARKET STATUS|STATUS)[^\n]*\n?", "", data["formatted_text"]
         ).strip()
         data["formatted_text"] = _strip_be_careful(data["formatted_text"])
+        data["formatted_text"] = _strip_predictions(data["formatted_text"])
         text = data["formatted_text"]
-
         if "TODAY'S USD" in text or "WEEKLY HIGH IMPACT" in text:
-            # Calendar posts: strip hashtags entirely
             text = re.sub(r"#\w+", "", text).strip()
             data["formatted_text"] = text
         else:
-            # Regular posts: filter to allowed hashtags only (trend emoji is already in headline)
             hashtags = re.findall(r"#\w+", text)
             allowed_hashtags = [h for h in hashtags if h in ALLOWED_HASHTAGS_SET]
             text = re.sub(r"#\w+", "", text).strip()
@@ -534,33 +510,6 @@ def _signal_hit(text: str) -> Optional[str]:
 
 def _strip_asterisks(text: str) -> str:
     return text.replace("*", "") if text else text
-
-
-def _clean_video_caption(text: str) -> str:
-    """
-    Final safety clean for video captions after AI returns the formatted text.
-    Removes any AI-added analysis sentences that sneak through.
-    Strips asterisks, markdown, excessive blank lines.
-    """
-    if not text:
-        return text
-    text = text.replace("*", "")
-    # Remove lines that sound like AI analysis / prediction
-    _ANALYSIS_PATTERNS = re.compile(
-        r"^.*(market[s]?\s+(react|surge|spike|rally|drop|fell|rose)|"
-        r"oil\s+(could|may|might|likely|expected)|"
-        r"gold\s+(could|may|might|likely|expected)|"
-        r"traders\s+(fear|price|react|watch)|"
-        r"supply\s+disruption\s+fear|"
-        r"safe.?haven\s+demand|"
-        r"this\s+(could|may|might)|"
-        r"prices?\s+(could|may|might|are\s+expected)).*$",
-        re.IGNORECASE | re.MULTILINE
-    )
-    text = _ANALYSIS_PATTERNS.sub("", text).strip()
-    # Clean up multiple blank lines left behind
-    text = re.sub(r'\n{3,}', '\n\n', text).strip()
-    return text
 
 
 class AIEngine:
@@ -723,78 +672,148 @@ class AIEngine:
     async def get_be_careful_line(self, event_name: str) -> str:
         return _get_be_careful_line(event_name)
 
-    async def analyse_video_caption(self, caption: str) -> dict:
+    async def analyse_video(self, caption: str,
+                            frames: Optional[List[bytes]] = None) -> dict:
         """
-        AI reads the video caption.
+        Full video analysis — two-stage:
 
-        APPROVE ONLY IF: physical war/strike/missile/airstrike/attack event
-        in a region that directly moves Gold or Oil prices.
-        ALL other videos → rejected.
+        STAGE 1: Caption only (fast, no image cost).
+            - If caption is clear war/geopolitical → approve immediately.
+            - If caption is clearly off-topic (signal, promo) → reject immediately.
+            - If caption is empty, vague, or ambiguous → go to Stage 2.
 
-        On approval: preserves the original caption — only removes junk
-        (other channel usernames, URLs, foreign hashtags), adds lead emoji
-        + trend emoji on first line, adds relevant hashtags.
-        Zero AI analysis, predictions, or commentary.
+        STAGE 2: Visual frame analysis (only if Stage 1 is uncertain).
+            - Send extracted frames + caption to Gemini Vision.
+            - AI looks at actual video frames to confirm war/conflict content.
+            - Approve or reject based on visual evidence + caption together.
         """
-        if not caption or not caption.strip():
-            return _reject("Empty video caption.", "no_caption", confidence=1.0)
+        caption = (caption or "").strip()
 
-        prompt = _VIDEO_CAPTION_PROMPT.format(caption=caption.strip()[:800])
+        # ── STAGE 1: Caption analysis ──────────────────────────────────────
+        log.info(f"🎥 Video Stage 1 — caption analysis | caption={caption[:80]!r}")
 
-        # Try Gemini first
+        if caption:
+            prompt = _VIDEO_CAPTION_PROMPT.format(caption=caption[:800])
+            stage1 = await self._try_engines_text(prompt, timeout_gemini=30, timeout_groq=40)
+
+            if stage1:
+                conf = stage1.get("confidence", 0.5)
+                approved = stage1.get("approved", False)
+
+                # High confidence either way → done, no need for frames
+                if conf >= 0.80:
+                    log.info(f"Stage 1 high-confidence → approved={approved} conf={conf:.2f} (skipping frames)")
+                    if approved and stage1.get("formatted_text"):
+                        stage1["formatted_text"] = stage1["formatted_text"].replace("*", "").strip()
+                    stage1["stage"] = "caption_only"
+                    return stage1
+
+                log.info(f"Stage 1 low-confidence (conf={conf:.2f}) → proceeding to visual frame analysis")
+            else:
+                log.warning("Stage 1 failed — proceeding to visual frame analysis")
+        else:
+            log.info("No caption — going straight to visual frame analysis")
+
+        # ── STAGE 2: Visual frame analysis ────────────────────────────────
+        if not frames:
+            log.info("No frames available for Stage 2 — rejecting (no caption + no frames)")
+            return _reject("No caption and no frames to analyse.", "no_content", confidence=1.0)
+
+        log.info(f"🎥 Video Stage 2 — visual analysis | frames={len(frames)}")
+        prompt = _VIDEO_VISUAL_PROMPT.format(caption=caption or "(no caption)")
+
+        # Build parts: up to 4 frames + prompt
+        parts = []
+        for frame_bytes in frames[:4]:
+            parts.append({
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": _b64(frame_bytes)
+                }
+            })
+        parts.append(prompt)
+
+        # Try Gemini Vision
         try:
-            verdict = await asyncio.wait_for(
-                self._gemini_call(prompt, None, "image/jpeg"), timeout=30
+            loop = asyncio.get_event_loop()
+            resp = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: self._gemini_vision.generate_content(parts)
+                ),
+                timeout=45
             )
-            verdict["engine"] = "gemini-2.5-flash"
-            log.info(f"Video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
-            if verdict.get("approved") and verdict.get("formatted_text"):
-                # Clean any AI analysis that snuck through
-                text = _clean_video_caption(verdict["formatted_text"])
-                # Re-apply allowed hashtag filter
-                hashtags = re.findall(r"#\w+", text)
-                allowed = [h for h in hashtags if h in ALLOWED_HASHTAGS_SET]
-                text = re.sub(r"#\w+", "", text).strip()
-                if allowed:
-                    text = text + "\n\n" + " ".join(allowed)
-                verdict["formatted_text"] = text
-            return verdict
+            data = _parse_json(resp.text)
+            data["engine"] = "gemini-2.5-flash-vision"
+            data["stage"] = "visual_frames"
+            log.info(f"Stage 2 Gemini → approved={data.get('approved')} | "
+                     f"visual_confirmed={data.get('visual_confirmed')} | "
+                     f"conf={data.get('confidence', 0):.2f}")
+            if data.get("approved") and data.get("formatted_text"):
+                data["formatted_text"] = data["formatted_text"].replace("*", "").strip()
+            return data
         except Exception as exc:
-            log.warning(f"Gemini video caption failed ({exc}) — trying Groq …")
+            log.warning(f"Stage 2 Gemini Vision failed ({exc}) — trying Groq …")
 
-        # Fallback to Groq
+        # Fallback: Groq with frames as image_url
         try:
-            verdict = await asyncio.wait_for(
-                self._groq_call(prompt, None, "image/jpeg"), timeout=40
+            content = []
+            for frame_bytes in frames[:4]:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{_b64(frame_bytes)}"}
+                })
+            content.append({"type": "text", "text": prompt})
+            resp = await asyncio.wait_for(
+                self._groq.chat.completions.create(
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    messages=[{"role": "user", "content": content}],
+                    temperature=0.1, max_tokens=600,
+                ),
+                timeout=60,
             )
-            verdict["engine"] = "groq-llama4-scout"
-            log.info(f"Groq video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
-            if verdict.get("approved") and verdict.get("formatted_text"):
-                # Clean any AI analysis that snuck through
-                text = _clean_video_caption(verdict["formatted_text"])
-                # Re-apply allowed hashtag filter
-                hashtags = re.findall(r"#\w+", text)
-                allowed = [h for h in hashtags if h in ALLOWED_HASHTAGS_SET]
-                text = re.sub(r"#\w+", "", text).strip()
-                if allowed:
-                    text = text + "\n\n" + " ".join(allowed)
-                verdict["formatted_text"] = text
-            return verdict
+            data = _parse_json(resp.choices[0].message.content)
+            data["engine"] = "groq-llama4-scout-vision"
+            data["stage"] = "visual_frames"
+            log.info(f"Stage 2 Groq → approved={data.get('approved')} | conf={data.get('confidence', 0):.2f}")
+            if data.get("approved") and data.get("formatted_text"):
+                data["formatted_text"] = data["formatted_text"].replace("*", "").strip()
+            return data
         except Exception as exc:
-            log.error(f"Both engines failed for video caption: {exc}")
-            return _reject("AI engines unavailable for video caption.", "engine_error", confidence=0.0)
+            log.error(f"Stage 2 both engines failed: {exc}")
+            return _reject("AI engines unavailable for video analysis.", "engine_error", confidence=0.0)
+
+    async def _try_engines_text(self, prompt: str,
+                                timeout_gemini: int = 30,
+                                timeout_groq: int = 40) -> Optional[dict]:
+        """Try Gemini then Groq for a text-only prompt. Returns None if both fail."""
+        try:
+            result = await asyncio.wait_for(
+                self._gemini_call(prompt, None, "image/jpeg"), timeout=timeout_gemini
+            )
+            result["engine"] = "gemini-2.5-flash"
+            return result
+        except Exception as exc:
+            log.warning(f"_try_engines_text Gemini failed: {exc}")
+        try:
+            result = await asyncio.wait_for(
+                self._groq_call(prompt, None, "image/jpeg"), timeout=timeout_groq
+            )
+            result["engine"] = "groq-llama4-scout"
+            return result
+        except Exception as exc:
+            log.warning(f"_try_engines_text Groq failed: {exc}")
+        return None
 
     def _build_moderation_prompt(self, text: str) -> str:
         return textwrap.dedent(f"""
             DATE (UTC): {_today_str()}
-            CHANNEL FOCUS: {self._category} — trades Gold (XAUUSD), Oil, and DXY ONLY
+            CHANNEL FOCUS: {self._category}
             SOURCE CONTENT:
             \"\"\"
             {text.strip() if text else "(image only — no text)"}
             \"\"\"
-            TASK: Analyse content. Approve ONLY if it directly affects Gold (XAUUSD), Oil, or DXY.
-            If no clear market impact on these three instruments → reject.
-            If forecast/previous values, signal, TA, meme, off-topic, stale → reject.
+            TASK: Analyse content. If relevant geopolitical/macro news OR actual released economic data, approve and format.
+            If forecast/previous values, signal, TA, meme, off-topic, stale — reject.
             Format according to rules. Return JSON.
         """).strip()
 
@@ -872,6 +891,7 @@ def _build_post_body(text: str) -> str:
     text = text.replace("*", "")
     text = re.sub(r"📌\s*(NOTE|MARKET STATUS|STATUS)[^\n]*\n?", "", text).strip()
     text = _strip_be_careful(text)
+    text = _strip_predictions(text)
     lines = text.split('\n')
     for i in range(max(0, len(lines) - 3), len(lines)):
         lines[i] = re.sub(r'\b\d{4}\b', '', lines[i])
