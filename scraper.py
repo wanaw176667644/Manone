@@ -1,23 +1,14 @@
 """
 scraper.py — AXIOM INTEL channel scraper and forwarder.
 
-CHANGES (this version):
-1. _VIDEO_MARKET_KEYWORDS tightened — only hard physical war events pass the pre-filter:
-   missile, strike, airstrike, attack, explosion, bombing, rocket, shelling, invasion.
-   Broad geopolitical keywords (blockade, nato, troops, sanctions alone) removed.
-   This prevents non-war videos from even reaching the AI.
-2. Video post-processing simplified — no _build_post_body() on video captions.
-   AI output is kept as-is (already cleaned by ai_engine.analyse_video_caption).
-   Only _add_signature() is applied after AI approval.
-3. All other logic unchanged from previous version.
-
-PREVIOUS FIXES (retained):
+FIXES (this version):
 1. Same-time grouping: AI prompt groups same-time events on one comma-separated line.
 2. Video support: AI reads and UNDERSTANDS the caption (not keyword match).
-   If war/geopolitical AND moves Gold/Oil/DXY → AI reformats → posts with signature.
-   All other videos rejected.
+   If war/geopolitical → AI reformats with emoji → posts with signature.
+   Non-war/geopolitical videos are rejected by AI.
 3. ForexFactory-only calendar: strict AI check — only forexfactory.com accepted.
-4. Calendar hard filter: ONLY USD events kept after parsing.
+4. Calendar hard filter: ONLY USD events kept after parsing. All other currencies
+   (EUR, GBP, JPY, etc.) are dropped in code — not just relied on AI.
 5. No duplicate-lock race condition — phash + content hash locked before AI call.
 6. Date format fix: "May 1" not "May 01".
 7. Timeouts increased for gemini-2.5-flash.
@@ -56,6 +47,7 @@ _FF_CAPTION_KEYWORDS = (
     "fomc", "federal funds rate", "interest rate decision"
 )
 
+
 _PRIORITY_KEYWORDS = [
     "fomc", "federal open market committee", "interest rate decision",
     "rate decision", "nfp", "non-farm payroll", "non-farm payrolls",
@@ -85,69 +77,9 @@ GEOPOLITICAL_KEYWORDS = [
     "geopolitical", "oil supply", "ukraine", "russia", "biden", "putin", "xi"
 ]
 
-# ── Video pre-filter: TIGHTENED ───────────────────────────────────────────────
-# Only hard physical war events pass this filter.
-# Caption must contain at least one keyword from this list to reach the AI.
-# This prevents wasting API credits on irrelevant or vague videos.
-#
-# RULE: Physical military action keywords ONLY.
-# Broad geopolitical terms (sanctions, blockade, nato, diplomacy) are excluded —
-# those do not describe videos we want to forward.
-_VIDEO_MARKET_KEYWORDS = [
-    # ── Physical war / attack events ──────────────────────────────────────
-    "missile",
-    "airstrike",
-    "air strike",
-    "airstrikes",
-    "air strikes",
-    "strike",
-    "strikes",
-    "attack",
-    "attacks",
-    "explosion",
-    "explosions",
-    "bombing",
-    "bomb",
-    "rocket",
-    "rockets",
-    "shelling",
-    "shell",
-    "armed attack",
-    "military strike",
-    "military attack",
-    "invasion",
-    "invaded",
-    "artillery",
-    "warplane",
-    "drone strike",
-    "ballistic",
-
-    # ── Key oil/gold-relevant regions (only in context of above events) ───
-    # These alone are NOT enough — they must appear alongside war keywords above.
-    # The AI does the final check; this just gates obvious misses.
-    "iran",
-    "iraq",
-    "israel",
-    "gaza",
-    "hezbollah",
-    "hamas",
-    "saudi arabia",
-    "hormuz",
-    "strait of hormuz",
-    "russia",
-    "ukraine",
-    "houthi",
-    "yemen",
-
-    # ── Direct commodity references ───────────────────────────────────────
-    "oil",
-    "crude",
-    "gold",
-    "xau",
-    "xauusd",
-]
-
 # ── Bulletproof event line regex ──────────────────────────────────────────────
+# Handles: leading zero, no space before PM, space before colon, double space
+# NOW also handles comma-separated names on one line (same-time slot grouping)
 _EVENT_PATTERN = re.compile(
     r"(🔴|🟠)\s+(\d{1,2}:\d{2}\s*[AP]M)\s*\|\s*([A-Z]{3})\s*:\s*(.+?)(?=\n|$)",
     re.IGNORECASE
@@ -207,7 +139,7 @@ def _eat_today_str() -> str:
 
 
 def _eat_today_display() -> str:
-    # No leading zero on day — "Friday, May 1, 2026"
+    # No leading zero on day — "Friday, May 1, 2026" matches "Fri May 1" in FF image
     return _eat_now().strftime("%A, %B %-d, %Y")
 
 
@@ -227,37 +159,96 @@ def _looks_like_weekly(text: str) -> bool:
     return any(kw in text.lower() for kw in ("week", "weekly", "this week", "next week"))
 
 
+
 def _normalise_urls(text: str) -> str:
     if not text:
         return text
     return re.sub(r'(\?|&)(utm_[^&]+|fbclid=[^&]+|ref=[^&]+|source=[^&]+)', '', text)
 
 
-def _video_caption_has_market_impact(caption: str) -> bool:
+async def _extract_video_frames(video_data: bytes, num_frames: int = 4) -> List[bytes]:
     """
-    Code-level pre-filter for videos. Tightened to physical war events only.
+    Extract evenly-spaced JPEG frames from video bytes using ffmpeg.
 
-    Returns True only if the caption contains at least one keyword suggesting
-    a physical military/war event or direct Gold/Oil commodity reference.
+    Strategy:
+    - Sample from first 30 seconds only (avoids downloading huge files fully)
+    - Extract num_frames frames spread across that window
+    - Returns list of JPEG bytes, empty list if ffmpeg fails
 
-    This runs BEFORE the AI call to save API credits.
-    The AI then does the final, strict approval check.
-
-    Note: Region keywords alone (iran, iraq, etc.) will pass this filter,
-    but the AI will still reject if there is no physical military event described.
-    This is intentional — a small number of false positives here is fine
-    because the AI catches them. False negatives (missing real war videos)
-    are the bigger risk to avoid.
+    Requires: ffmpeg installed (apt-get install ffmpeg)
     """
-    if not caption or not caption.strip():
-        return False
-    lower = caption.lower()
-    return any(kw in lower for kw in _VIDEO_MARKET_KEYWORDS)
+    frames: List[bytes] = []
+    tmp_in = None
+    tmp_dir = None
+
+    try:
+        import tempfile, os, subprocess
+
+        # Write video to temp file
+        tmp_dir = tempfile.mkdtemp()
+        tmp_in = os.path.join(tmp_dir, "input_video")
+        with open(tmp_in, "wb") as f:
+            f.write(video_data)
+
+        # Extract frames: 1 frame every (30/num_frames) seconds, max 30s
+        interval = max(1, 30 // num_frames)
+        out_pattern = os.path.join(tmp_dir, "frame_%02d.jpg")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-t", "30",                      # only first 30 seconds
+            "-i", tmp_in,
+            "-vf", f"fps=1/{interval}",      # 1 frame per interval seconds
+            "-vframes", str(num_frames),
+            "-q:v", "3",                     # JPEG quality (2=best, 5=ok)
+            "-f", "image2",
+            out_pattern,
+        ]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=25)
+        except asyncio.TimeoutError:
+            proc.kill()
+            log.warning("ffmpeg frame extraction timed out")
+            return []
+
+        # Read extracted frames
+        for i in range(1, num_frames + 1):
+            frame_path = os.path.join(tmp_dir, f"frame_{i:02d}.jpg")
+            if os.path.exists(frame_path):
+                with open(frame_path, "rb") as f:
+                    frames.append(f.read())
+
+        log.info(f"🎞️ Extracted {len(frames)} frame(s) from video")
+
+    except FileNotFoundError:
+        log.warning("ffmpeg not found — visual frame analysis unavailable. Install with: apt-get install ffmpeg")
+    except Exception as exc:
+        log.warning(f"Frame extraction failed: {exc}")
+    finally:
+        # Cleanup temp files
+        try:
+            import shutil
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    return frames
 
 
 def _extract_events_from_ff_text(text: str) -> List[dict]:
     """
     Parse AI output — one or more events per line — then GROUP by time_24h.
+
+    The AI prompt now outputs same-time events on ONE line already
+    (comma-separated names), but we still group defensively in case
+    the AI splits them across lines.
 
     Same time slot → comma-separated names on one line.
     Red wins: if any event at a time is red, whole group is red.
@@ -285,6 +276,7 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
         time_24h = dt.strftime("%H:%M")
         time_12h_clean = dt.strftime("%-I:%M %p")   # "3:30 PM" not "03:30 PM"
 
+        # The AI may already put "Event A, Event B" on one line — keep as-is
         raw.append({
             "name":     name_field.strip(),
             "currency": currency.strip(),
@@ -297,13 +289,13 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
         log.error("❌ No events extracted! Raw text snippet:\n%s", text[:800])
         return []
 
-    # ── HARD FILTER: USD only ─────────────────────────────────────────────
+    # ── HARD FILTER: USD only — drop all other currencies ─────────────────
     raw = [e for e in raw if e["currency"].upper() == "USD"]
     if not raw:
         log.info("No USD events found after currency filter.")
         return []
 
-    # Defensive grouping by time_24h
+    # Defensive grouping by time_24h — merges any AI-split same-time events
     grouped: dict = {}
     for e in raw:
         key = e["time_24h"]
@@ -316,6 +308,7 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
                 "names":    [e["name"]],
             }
         else:
+            # Avoid appending if the name is already present (AI might duplicate)
             existing_names = [n.strip().lower() for n in grouped[key]["names"]]
             for part in e["name"].split(","):
                 part = part.strip()
@@ -455,11 +448,12 @@ class ChannelScraper:
                 sent = await self._client.send_file(
                     dest, buf, caption=caption, parse_mode="md",
                     force_document=False,
-                    supports_streaming=True,
+                    supports_streaming=True,   # enables inline playback
                 )
                 log.info(f"  → Video sent to {dest} | msg_id={sent.id}")
             except Exception as exc:
                 log.error(f"Send video error on {dest}: {exc}")
+                # fallback: send caption as text only
                 try:
                     sent = await self._client.send_message(dest, caption, parse_mode="md")
                 except Exception as exc2:
@@ -646,68 +640,79 @@ class ChannelScraper:
 
     async def _handle_video(self, msg, caption: str, source_channel: str):
         """
-        Handle video messages.
+        Handle video messages — two-stage AI analysis:
 
-        STAGE 1 — Code-level pre-filter (no API cost):
-          Caption must contain at least one physical war/attack keyword
-          OR direct Gold/Oil reference to pass.
-          If not → reject immediately. Saves API credits.
+        Stage 1: AI reads caption only (fast).
+            - High confidence war/geo → approve immediately, skip frame extraction.
+            - High confidence off-topic → reject immediately.
+            - Low confidence or empty caption → Stage 2.
 
-        STAGE 2 — AI understanding:
-          AI reads the caption. Approves ONLY if:
-          - Physical military event (missile, strike, airstrike, attack, explosion)
-          - In a region that directly affects Oil or Gold prices
-          AI preserves the original caption — no rewriting, no analysis added.
-
-        STAGE 3 — Download & post (only if AI approved).
-          Caption used exactly as returned by AI (already cleaned).
-          Only _add_signature() is applied.
+        Stage 2: Extract frames with ffmpeg → AI looks at frames + caption visually.
+            - Confirms or denies war/conflict content from actual video footage.
         """
-        log.info(f"🎥 Video received — running pre-filter on caption …")
+        log.info(f"🎥 Video received from {source_channel} | caption={caption[:80]!r}")
 
-        # ── STAGE 1: Code-level keyword pre-filter ─────────────────────────
-        if not _video_caption_has_market_impact(caption):
-            log.info(f"[SKIP] Video pre-filter: caption has no war/strike/Gold/Oil keywords.")
-            return
-
-        log.info(f"🎥 Pre-filter passed — sending caption to AI for understanding …")
-
-        # Compute dedup hash on caption
+        # Dedup on caption hash before any download
         content_hash = self._mem.hash_combined(caption, None)
         if await self._mem.is_duplicate(content_hash):
             log.info(f"[SKIP] Video caption hash duplicate — {content_hash[:12]}…")
             return
 
-        # ── STAGE 2: AI understands the caption ───────────────────────────
-        verdict = await self._ai.analyse_video_caption(caption)
+        # ── STAGE 1: caption-only analysis (no download yet) ──────────────
+        verdict = await self._ai.analyse_video(caption=caption, frames=None)
+        stage = verdict.get("stage", "caption_only")
+        approved = verdict.get("approved", False)
+        conf = verdict.get("confidence", 0.0)
 
-        if not verdict.get("approved"):
-            log.info(f"[SKIP] Video rejected by AI — reason: {verdict.get('reason')}")
+        log.info(f"🎥 Stage 1 result → approved={approved} | conf={conf:.2f} | stage={stage}")
+
+        # High confidence rejection — skip download entirely
+        if not approved and conf >= 0.80:
+            log.info(f"[SKIP] Video rejected by AI (high conf) — reason: {verdict.get('reason')}")
             return
 
-        # Get the AI-cleaned caption (original preserved, junk removed, emojis added)
-        post_caption = verdict.get("formatted_text", "").strip()
-        if not post_caption:
-            log.info("[SKIP] Video: AI approved but returned empty text.")
-            return
-
-        # ── STAGE 3: Download video only after AI approves ────────────────
+        # ── Download video (needed for frames OR to post if approved) ──────
         try:
             buf = io.BytesIO()
             await self._client.download_media(msg.media, file=buf)
             video_data = buf.getvalue()
             video_mime = _doc_mime(msg)
-            log.info(f"Video downloaded: {len(video_data):,} bytes | mime={video_mime}")
+            log.info(f"📥 Video downloaded: {len(video_data):,} bytes | mime={video_mime}")
         except Exception as exc:
             log.warning(f"Video download failed: {exc}")
             return
 
-        # Lock before forwarding
+        # ── STAGE 2: visual frame analysis if caption was uncertain ───────
+        if not approved or conf < 0.80:
+            log.info("🎞️ Extracting frames for visual analysis …")
+            frames = await _extract_video_frames(video_data, num_frames=4)
+
+            if frames:
+                verdict = await self._ai.analyse_video(caption=caption, frames=frames)
+                approved = verdict.get("approved", False)
+                conf = verdict.get("confidence", 0.0)
+                log.info(f"🎥 Stage 2 result → approved={approved} | "
+                         f"visual_confirmed={verdict.get('visual_confirmed')} | conf={conf:.2f}")
+            else:
+                log.warning("No frames extracted — relying on Stage 1 result")
+                # If Stage 1 was uncertain AND no frames → reject safely
+                if conf < 0.80:
+                    log.info("[SKIP] Low confidence caption + no frames → rejected for safety")
+                    return
+
+        if not verdict.get("approved"):
+            log.info(f"[SKIP] Video rejected — reason: {verdict.get('reason')}")
+            return
+
+        post_caption = verdict.get("formatted_text", "").strip()
+        if not post_caption:
+            log.info("[SKIP] Video: AI approved but returned empty formatted text.")
+            return
+
+        # Lock before posting
         await self._mem.mark_seen(content_hash, source=source_channel)
 
-        # Add signature — this is the ONLY post-processing step for video captions.
-        # Do NOT call _build_post_body() here — that is for news text posts only.
-        # The AI already cleaned and formatted the caption correctly.
+        # Add signature
         post_caption = _add_signature(post_caption)
 
         delay = random.uniform(self._min_delay, self._max_delay)
@@ -716,7 +721,7 @@ class ChannelScraper:
 
         sent = await self._broadcast_video_with_caption(video_data, video_mime, post_caption)
         if sent:
-            log.info(f"🎥 Video posted → msg_id={sent.id}")
+            log.info(f"🎥 Video posted → msg_id={sent.id} | engine={verdict.get('engine')} | stage={verdict.get('stage')}")
             await self._mem.store_recent_post(
                 source_text=caption[:1000], post_text=post_caption[:1000], image_phash=None
             )
@@ -755,6 +760,9 @@ class ChannelScraper:
     async def _image_looks_like_ff(self, image_data: bytes, image_mime: str) -> bool:
         """
         STRICT check: only accept genuine ForexFactory.com calendar screenshots.
+        The AI must confirm (a) it is a ForexFactory calendar AND (b) the
+        forexfactory.com URL/logo is visible in the image.
+        Other calendar sources (Investing.com, DailyFX, etc.) are rejected.
         """
         try:
             prompt = (
@@ -973,7 +981,7 @@ class ChannelScraper:
 
             log.info(f"📄 Raw AI output:\n{raw_text}")
 
-            # Parse and group events
+            # Parse and group events (same-time slots merged by comma)
             events = _extract_events_from_ff_text(raw_text)
 
             # Filter geopolitical
@@ -1013,6 +1021,7 @@ class ChannelScraper:
             lines = [title, "", date_line, ""]
             for e in events:
                 emoji = "🔴" if e["impact"] == "red" else "🟠"
+                # Names are already comma-separated if same time slot
                 lines.append(f"{emoji} {e['time_12h']} | {e['currency']}: {e['name']}")
 
             if has_red:
