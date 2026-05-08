@@ -1,8 +1,13 @@
 """
 ai_engine.py — Final version.
-- Random 💡 signature 25% of the time.
-- "Be careful" reminder lines — short, event-specific, no motivational pool.
-- "Be careful during these releases." kept in daily calendar.
+
+FIXES (this version):
+1. _FF_IMAGE_PROMPT now explicitly tells AI to GROUP same-time events on
+   ONE line with comma-separated names — no splitting by time slot.
+2. FF image prompt reinforced: reject any non-ForexFactory calendar source.
+3. Weekly prompt also updated to group same-time events.
+4. Random 💡 signature 25% of the time.
+5. "Be careful" reminder lines — short, event-specific.
 """
 
 import asyncio
@@ -55,7 +60,6 @@ def _strip_be_careful(text: str) -> str:
 def _get_be_careful_line(event_name: str) -> str:
     """
     Short, event-specific 'be careful' line for reminders.
-    No long motivational pool — just sharp, focused warnings.
     """
     n = event_name.lower()
     if any(kw in n for kw in ["fomc", "federal funds", "interest rate", "fed chair", "powell", "federal reserve"]):
@@ -82,7 +86,6 @@ def _get_be_careful_line(event_name: str) -> str:
         return "⚠️ Trade data can move USD unexpectedly. Be careful during the release."
     if any(kw in n for kw in ["durable goods"]):
         return "⚠️ Durable Goods can cause sharp moves. Be careful — no new entries now."
-    # General fallback for any other red event
     return "⚠️ This release can move the market strongly. Be careful — protect your capital."
 
 
@@ -183,67 +186,103 @@ Be aggressive: if there is any reasonable chance they are the same, mark same_st
 Respond with JSON: {{"same_story": true, "confidence": 0.0-1.0, "reason": "..."}}
 """
 
+# ── FIXED: AI now groups same-time events on ONE line with comma-separated names
 _FF_IMAGE_PROMPT = """
 You are analysing a ForexFactory economic calendar screenshot.
 
 TODAY'S DATE: {today_date}
 
-INSTRUCTIONS:
-1. DATE CHECK — Look at the date shown anywhere in the screenshot (header, "Today" label, column header, etc).
-   The screenshot must show the SAME month and day as {today_date}.
-   IMPORTANT: Ignore formatting differences — "May 1", "May 01", "Fri May 1", "05/01" all count as the same date.
-   Only reject if the month OR day is clearly different (e.g. screenshot shows April 30 but today is May 1).
-   Do NOT reject just because the year is missing or the format looks different.
+STEP 1 — SOURCE VALIDATION (CRITICAL):
+This tool ONLY accepts screenshots from ForexFactory.com.
+Look for "forexfactory.com", the ForexFactory logo, or the exact FF calendar layout.
+If this is any other website's calendar (Investing.com, DailyFX, TradingEconomics, 
+myfxbook, etc.) — immediately respond: {{"approved": false, "reason": "not forexfactory"}}
 
-2. Extract ALL USD high-impact (🔴) and medium-impact (🟠) events visible.
-   Write EACH event on its OWN separate line — even if they share the same time.
+STEP 2 — DATE CHECK:
+Look at the date shown in the screenshot (header, "Today" label, column header, etc).
+The screenshot must show the SAME month and day as {today_date}.
+IMPORTANT: Ignore formatting differences — "May 1", "May 01", "Fri May 1", "05/01" all 
+count as the same date. Only reject if the month OR day is clearly different.
+Do NOT reject just because the year is missing or the format looks different.
 
-3. Do NOT include the year in the date line (e.g. "Friday, May 1" — no year).
+STEP 3 — EXTRACT EVENTS:
+Extract ALL USD high-impact (🔴) and medium-impact (🟠) events visible.
 
-4. Do NOT add any hashtags.
+GROUPING RULE — CRITICAL:
+If two or more events share the EXACT SAME TIME, put them ALL on ONE line with
+comma-separated names. Do NOT create separate lines for same-time events.
 
-5. No forecast, no previous data, no NOTE, no commentary.
+CORRECT (same time → one line):
+🔴 3:30 PM | USD: Advance GDP q/q, Core PCE Price Index m/m, Employment Cost Index q/q
 
-6. Do NOT add "Be careful" line — added automatically by the system.
+WRONG (do NOT do this — split lines for same time):
+🔴 3:30 PM | USD: Advance GDP q/q
+🔴 3:30 PM | USD: Core PCE Price Index m/m
+🔴 3:30 PM | USD: Employment Cost Index q/q
 
-7. Keep original times. Use 12-hour AM/PM format. No timezone label. No leading zero on hour.
+STEP 4 — FORMAT:
+- Do NOT include the year in the date line (e.g. "Friday, May 1" — no year).
+- Do NOT add any hashtags.
+- No forecast, no previous data, no NOTE, no commentary.
+- Do NOT add "Be careful" line — added automatically by the system.
+- Keep original times. Use 12-hour AM/PM format. No timezone label. No leading zero on hour.
+- Plain text only — no asterisks, no bold.
 
-EXACT OUTPUT FORMAT:
+EXACT OUTPUT FORMAT EXAMPLE:
 
 TODAY'S USD HIGH IMPACT NEWS
 Friday, May 1
 
-🔴 3:30 PM | USD: Advance GDP q/q
-🔴 3:30 PM | USD: Core PCE Price Index m/m
-🔴 3:30 PM | USD: Employment Cost Index q/q
+🔴 3:30 PM | USD: Advance GDP q/q, Core PCE Price Index m/m, Employment Cost Index q/q
 🟠 5:00 PM | USD: Unemployment Claims
 
-RULES:
+RULES SUMMARY:
 - Only USD events (🔴 and 🟠 only)
-- Each event on its own line
+- Same-time events → ONE line, comma-separated names
+- Different-time events → separate lines
 - 12-hour AM/PM, no leading zero (3:30 PM not 03:30 PM)
-- Plain text only — no asterisks, no bold
 - Do NOT add signature or "Be careful" line
 
 If screenshot clearly shows a DIFFERENT month or day → {{"approved": false, "reason": "wrong date"}}
-If valid → {{"approved": true, "reason": "valid FF today image", "formatted_text": "..."}}
+If not ForexFactory → {{"approved": false, "reason": "not forexfactory"}}
+If valid ForexFactory today → {{"approved": true, "reason": "valid FF today image", "formatted_text": "..."}}
 RESPOND WITH VALID JSON ONLY.
 """.strip()
 
+# ── FIXED: Weekly prompt also groups same-time events
 _FF_WEEKLY_IMAGE_PROMPT = """
-You are analysing a ForexFactory calendar for the weekly outlook.
-No timezone conversion. 12-hour AM/PM only. No leading zero on hours.
-Only USD high-impact (🔴) and medium-impact (🟠) events.
-NO forecast, NO previous data, NO hashtags.
-Do NOT include the year in dates (use "Monday — Apr 28").
-Do NOT add "Be careful" line — added automatically.
+You are analysing a ForexFactory.com calendar screenshot for the weekly outlook.
+
+SOURCE VALIDATION (CRITICAL):
+Only accept ForexFactory.com screenshots. If this is any other calendar source
+(Investing.com, DailyFX, TradingEconomics, etc.) respond:
+{{"approved": false, "reason": "not forexfactory"}}
 
 CURRENT WEEK: {week_range}
 
-Each event on its OWN line. Group by day. Plain text, no bold. No signature.
+EXTRACTION RULES:
+- Only USD high-impact (🔴) and medium-impact (🟠) events.
+- No forecast, no previous data, no hashtags.
+- Do NOT include the year in dates (use "Monday — Apr 28").
+- Do NOT add "Be careful" line — added automatically.
+- No timezone conversion. 12-hour AM/PM only. No leading zero on hours.
+- Plain text, no bold. No signature.
 
-If valid:
-{{"approved": true, "reason": "valid FF weekly image", "formatted_text": "WEEKLY HIGH IMPACT NEWS\\nWeek of Apr 28 – May 2\\n\\nMonday — Apr 28\\n🔴 3:30 PM | USD: Event Name\\n\\nTuesday — Apr 29\\n🟠 10:00 AM | USD: Other Event"}}
+GROUPING RULE — CRITICAL:
+If two or more events share the EXACT SAME TIME on the same day,
+put them ALL on ONE line with comma-separated names.
+
+CORRECT:
+🔴 3:30 PM | USD: NFP, Unemployment Rate, Average Hourly Earnings
+
+WRONG:
+🔴 3:30 PM | USD: NFP
+🔴 3:30 PM | USD: Unemployment Rate
+
+Group by day, sort by time within each day.
+
+If valid ForexFactory weekly:
+{{"approved": true, "reason": "valid FF weekly image", "formatted_text": "WEEKLY HIGH IMPACT NEWS\\nWeek of Apr 28 – May 2\\n\\nMonday — Apr 28\\n🔴 3:30 PM | USD: Event A, Event B\\n\\nTuesday — Apr 29\\n🟠 10:00 AM | USD: Other Event"}}
 
 Otherwise: {{"approved": false, "reason": "..."}}
 RESPOND WITH VALID JSON ONLY.
@@ -292,7 +331,6 @@ def _validate_and_clean(data: dict) -> dict:
         data["formatted_text"] = re.sub(
             r"📌\s*(NOTE|MARKET STATUS|STATUS)[^\n]*\n?", "", data["formatted_text"]
         ).strip()
-        # Strip any AI-generated "Be careful" line — scraper adds its own
         data["formatted_text"] = _strip_be_careful(data["formatted_text"])
         text = data["formatted_text"]
         if "TODAY'S USD" in text or "WEEKLY HIGH IMPACT" in text:
@@ -490,7 +528,6 @@ class AIEngine:
             return {"approved": False, "reason": "AI engines unavailable for image analysis."}
 
     async def get_be_careful_line(self, event_name: str) -> str:
-        """Return the short event-specific be-careful line for reminders."""
         return _get_be_careful_line(event_name)
 
     def _build_moderation_prompt(self, text: str) -> str:
