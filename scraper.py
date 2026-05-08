@@ -640,38 +640,80 @@ class ChannelScraper:
 
     async def _handle_video(self, msg, caption: str, source_channel: str):
         """
-        Handle video messages — two-stage AI analysis:
+        Handle video messages — two-stage AI analysis with full dedup:
 
-        Stage 1: AI reads caption only (fast).
-            - High confidence war/geo → approve immediately, skip frame extraction.
-            - High confidence off-topic → reject immediately.
-            - Low confidence or empty caption → Stage 2.
+        DEDUP LAYER 1: Caption hash — catches exact same caption.
+        DEDUP LAYER 2: Caption size fingerprint — catches same video,
+                       different caption wording.
+        DEDUP LAYER 3: AI similarity — catches same story reworded.
+        DEDUP LAYER 4: Lock BEFORE download — no race condition.
 
-        Stage 2: Extract frames with ffmpeg → AI looks at frames + caption visually.
-            - Confirms or denies war/conflict content from actual video footage.
+        Stage 1: AI reads caption only (fast, no download).
+        Stage 2: Extract frames → AI visual analysis (only if uncertain).
         """
         log.info(f"🎥 Video received from {source_channel} | caption={caption[:80]!r}")
 
-        # Dedup on caption hash before any download
-        content_hash = self._mem.hash_combined(caption, None)
-        if await self._mem.is_duplicate(content_hash):
-            log.info(f"[SKIP] Video caption hash duplicate — {content_hash[:12]}…")
+        # ── Get video file size for fingerprinting (no download needed) ────
+        video_size = 0
+        try:
+            if hasattr(msg.media, 'document') and msg.media.document:
+                video_size = msg.media.document.size or 0
+        except Exception:
+            pass
+
+        # ── DEDUP LAYER 1: Exact caption hash ─────────────────────────────
+        caption_hash = self._mem.hash_combined(caption, None)
+        if await self._mem.is_duplicate(caption_hash):
+            log.info(f"[SKIP] Video caption hash duplicate — {caption_hash[:12]}…")
             return
 
-        # ── STAGE 1: caption-only analysis (no download yet) ──────────────
+        # ── DEDUP LAYER 2: Caption + file size fingerprint ─────────────────
+        # Same video reposted with slightly different caption still has same size
+        size_key = f"video_size_{video_size}" if video_size > 0 else None
+        if size_key and await self._mem.is_duplicate(size_key):
+            log.info(f"[SKIP] Video file size duplicate ({video_size:,} bytes) — same video already posted")
+            return
+
+        # ── DEDUP LAYER 3: AI similarity against recent posts ─────────────
+        if caption:
+            try:
+                recent = await self._mem.get_recent_posts(limit=50)
+                today_date = _eat_now().date()
+                for old_text, old_phash, old_date_str in recent:
+                    if not old_text:
+                        continue
+                    old_date = datetime.fromisoformat(old_date_str).date()
+                    if old_date != today_date:
+                        continue
+                    same = await self._ai.is_same_story(
+                        text_a=caption[:500],
+                        text_b=old_text[:500],
+                    )
+                    if same:
+                        log.info(f"[SKIP] Video caption matches recent post — AI similarity duplicate")
+                        return
+            except Exception as exc:
+                log.warning(f"Video similarity check error: {exc}")
+
+        # ── LOCK early — before download, before AI call ───────────────────
+        await self._mem.mark_seen(caption_hash, source=source_channel)
+        if size_key:
+            await self._mem.mark_seen(size_key, source=source_channel)
+
+        # ── STAGE 1: Caption-only AI analysis (no download yet) ───────────
         verdict = await self._ai.analyse_video(caption=caption, frames=None)
         stage = verdict.get("stage", "caption_only")
         approved = verdict.get("approved", False)
         conf = verdict.get("confidence", 0.0)
 
-        log.info(f"🎥 Stage 1 result → approved={approved} | conf={conf:.2f} | stage={stage}")
+        log.info(f"🎥 Stage 1 → approved={approved} | conf={conf:.2f} | stage={stage}")
 
         # High confidence rejection — skip download entirely
         if not approved and conf >= 0.80:
-            log.info(f"[SKIP] Video rejected by AI (high conf) — reason: {verdict.get('reason')}")
+            log.info(f"[SKIP] Video rejected by AI (high conf={conf:.2f}) — {verdict.get('reason')}")
             return
 
-        # ── Download video (needed for frames OR to post if approved) ──────
+        # ── Download video ─────────────────────────────────────────────────
         try:
             buf = io.BytesIO()
             await self._client.download_media(msg.media, file=buf)
@@ -682,7 +724,7 @@ class ChannelScraper:
             log.warning(f"Video download failed: {exc}")
             return
 
-        # ── STAGE 2: visual frame analysis if caption was uncertain ───────
+        # ── STAGE 2: Visual frame analysis if caption uncertain ───────────
         if not approved or conf < 0.80:
             log.info("🎞️ Extracting frames for visual analysis …")
             frames = await _extract_video_frames(video_data, num_frames=4)
@@ -691,28 +733,23 @@ class ChannelScraper:
                 verdict = await self._ai.analyse_video(caption=caption, frames=frames)
                 approved = verdict.get("approved", False)
                 conf = verdict.get("confidence", 0.0)
-                log.info(f"🎥 Stage 2 result → approved={approved} | "
+                log.info(f"🎥 Stage 2 → approved={approved} | "
                          f"visual_confirmed={verdict.get('visual_confirmed')} | conf={conf:.2f}")
             else:
                 log.warning("No frames extracted — relying on Stage 1 result")
-                # If Stage 1 was uncertain AND no frames → reject safely
                 if conf < 0.80:
-                    log.info("[SKIP] Low confidence caption + no frames → rejected for safety")
+                    log.info("[SKIP] Low confidence + no frames → rejected for safety")
                     return
 
         if not verdict.get("approved"):
-            log.info(f"[SKIP] Video rejected — reason: {verdict.get('reason')}")
+            log.info(f"[SKIP] Video rejected — {verdict.get('reason')}")
             return
 
         post_caption = verdict.get("formatted_text", "").strip()
         if not post_caption:
-            log.info("[SKIP] Video: AI approved but returned empty formatted text.")
+            log.info("[SKIP] Video approved but empty formatted text.")
             return
 
-        # Lock before posting
-        await self._mem.mark_seen(content_hash, source=source_channel)
-
-        # Add signature
         post_caption = _add_signature(post_caption)
 
         delay = random.uniform(self._min_delay, self._max_delay)
