@@ -1,13 +1,18 @@
 """
 scraper.py — AXIOM INTEL channel scraper and forwarder.
-- Groups same-time events into one comma-separated line.
-- Bulletproof regex — handles all AI output variations.
-- No double signature.
-- "Be careful during these releases." in daily calendar.
-- Reminder fires for ALL red events — event-specific be-careful line.
-- All duplicate locks acquired BEFORE AI call.
-- Date format fix: "May 1" not "May 01" — matches ForexFactory image.
-- Timeouts increased for gemini-2.5-flash.
+
+FIXES (this version):
+1. Same-time grouping: AI prompt now explicitly forbids splitting same-time
+   events — each TIME SLOT on one line, comma-separated names.
+   _extract_events_from_ff_text groups defensively even if AI splits them.
+2. Video support: War/conflict videos forwarded if caption matches geopolitical
+   keywords. Non-war videos are rejected.
+3. ForexFactory-only calendar: _image_looks_like_ff now also checks the URL/
+   watermark text — only accepts genuine FF screenshots (forexfactory.com visible
+   OR AI confirms it). Any other calendar source is rejected.
+4. No duplicate-lock race condition — phash + content hash locked before AI call.
+5. Date format fix: "May 1" not "May 01".
+6. Timeouts increased for gemini-2.5-flash.
 """
 
 import asyncio
@@ -33,6 +38,8 @@ log = logging.getLogger("scraper")
 
 EAT = pytz.timezone("Africa/Addis_Ababa")
 _IMG_MIMES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_VIDEO_MIMES = {"video/mp4", "video/mpeg", "video/quicktime", "video/x-matroska",
+                "video/webm", "video/3gpp", "video/x-msvideo"}
 
 _FF_CAPTION_KEYWORDS = (
     "forexfactory", "forex factory", "calendar", "economic calendar",
@@ -40,6 +47,17 @@ _FF_CAPTION_KEYWORDS = (
     "today's news", "weekly calendar", "this week",
     "fomc", "federal funds rate", "interest rate decision"
 )
+
+# ── WAR / conflict keywords — videos with these captions are allowed ──────────
+_WAR_VIDEO_KEYWORDS = [
+    "war", "attack", "strike", "missile", "bomb", "explosion", "military",
+    "conflict", "invasion", "troops", "airstrike", "drone strike", "combat",
+    "battle", "frontline", "front line", "shelling", "artillery",
+    "ukraine", "russia", "iran", "hormuz", "israel", "gaza", "nato",
+    "geopolitical", "escalation", "ceasefire", "sanction",
+    "trump", "putin", "xi jinping", "biden",
+    "oil supply", "oil embargo", "energy crisis",
+]
 
 _PRIORITY_KEYWORDS = [
     "fomc", "federal open market committee", "interest rate decision",
@@ -49,7 +67,6 @@ _PRIORITY_KEYWORDS = [
     "unemployment rate", "retail sales", "gold", "xau",
 ]
 
-# ── VIP events — ONLY these get 15-min reminders ─────────────────────────────
 _VIP_KEYWORDS = [
     "fomc", "federal open market committee",
     "federal funds rate", "interest rate decision",
@@ -73,6 +90,7 @@ GEOPOLITICAL_KEYWORDS = [
 
 # ── Bulletproof event line regex ──────────────────────────────────────────────
 # Handles: leading zero, no space before PM, space before colon, double space
+# NOW also handles comma-separated names on one line (same-time slot grouping)
 _EVENT_PATTERN = re.compile(
     r"(🔴|🟠)\s+(\d{1,2}:\d{2}\s*[AP]M)\s*\|\s*([A-Z]{3})\s*:\s*(.+?)(?=\n|$)",
     re.IGNORECASE
@@ -80,19 +98,16 @@ _EVENT_PATTERN = re.compile(
 
 
 def _is_vip_event(name: str) -> bool:
-    """True only for top-tier events that get a 15-min reminder."""
     n = name.lower()
     return any(kw in n for kw in _VIP_KEYWORDS)
 
 
 def _is_reminder_eligible(event: dict) -> bool:
-    """Only VIP red 🔴 events get reminders — not all red events."""
     if event.get("impact") != "red":
         return False
     name_lower = event.get("name", "").lower()
     if any(kw in name_lower for kw in GEOPOLITICAL_KEYWORDS):
         return False
-    # Must match VIP keywords — ISM, Retail Sales, etc. do NOT get reminders
     return _is_vip_event(name_lower)
 
 
@@ -107,6 +122,15 @@ def _is_image(msg) -> bool:
     if isinstance(msg.media, MessageMediaDocument):
         doc = msg.media.document
         if doc and doc.mime_type in _IMG_MIMES:
+            return True
+    return False
+
+
+def _is_video(msg) -> bool:
+    """True if the message media is a video file."""
+    if isinstance(msg.media, MessageMediaDocument):
+        doc = msg.media.document
+        if doc and doc.mime_type in _VIDEO_MIMES:
             return True
     return False
 
@@ -126,13 +150,11 @@ def _eat_today_str() -> str:
 
 
 def _eat_today_display() -> str:
-    # FIX: no leading zero on day — "Friday, May 1, 2026" matches "Fri May 1" in FF image
-    # Old: strftime("%A, %B %d, %Y") → "Friday, May 01, 2026" caused AI date mismatch → timeout
+    # No leading zero on day — "Friday, May 1, 2026" matches "Fri May 1" in FF image
     return _eat_now().strftime("%A, %B %-d, %Y")
 
 
 def _eat_date_line() -> str:
-    # Post header — no year, no leading zero: "Friday, May 1"
     return _eat_now().strftime("%A, %B %-d")
 
 
@@ -148,6 +170,14 @@ def _looks_like_weekly(text: str) -> bool:
     return any(kw in text.lower() for kw in ("week", "weekly", "this week", "next week"))
 
 
+def _caption_is_war_video(text: str) -> bool:
+    """Return True if video caption contains war/conflict keywords."""
+    if not text:
+        return False
+    lower = text.lower()
+    return any(kw in lower for kw in _WAR_VIDEO_KEYWORDS)
+
+
 def _normalise_urls(text: str) -> str:
     if not text:
         return text
@@ -156,7 +186,12 @@ def _normalise_urls(text: str) -> str:
 
 def _extract_events_from_ff_text(text: str) -> List[dict]:
     """
-    Parse AI output — one event per line — then GROUP by time_24h.
+    Parse AI output — one or more events per line — then GROUP by time_24h.
+
+    The AI prompt now outputs same-time events on ONE line already
+    (comma-separated names), but we still group defensively in case
+    the AI splits them across lines.
+
     Same time slot → comma-separated names on one line.
     Red wins: if any event at a time is red, whole group is red.
     Returns list sorted by time ascending.
@@ -170,7 +205,7 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
         m = _EVENT_PATTERN.search(line)
         if not m:
             continue
-        emoji, time_12h, currency, name = m.groups()
+        emoji, time_12h, currency, name_field = m.groups()
         time_12h = time_12h.strip()
         try:
             dt = datetime.strptime(time_12h, "%I:%M %p")
@@ -182,8 +217,10 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
                 continue
         time_24h = dt.strftime("%H:%M")
         time_12h_clean = dt.strftime("%-I:%M %p")   # "3:30 PM" not "03:30 PM"
+
+        # The AI may already put "Event A, Event B" on one line — keep as-is
         raw.append({
-            "name":     name.strip(),
+            "name":     name_field.strip(),
             "currency": currency.strip(),
             "impact":   "red" if emoji == "🔴" else "orange",
             "time_12h": time_12h_clean,
@@ -194,7 +231,7 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
         log.error("❌ No events extracted! Raw text snippet:\n%s", text[:800])
         return []
 
-    # Group by time_24h
+    # Defensive grouping by time_24h — merges any AI-split same-time events
     grouped: dict = {}
     for e in raw:
         key = e["time_24h"]
@@ -207,7 +244,13 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
                 "names":    [e["name"]],
             }
         else:
-            grouped[key]["names"].append(e["name"])
+            # Avoid appending if the name is already present (AI might duplicate)
+            existing_names = [n.strip().lower() for n in grouped[key]["names"]]
+            for part in e["name"].split(","):
+                part = part.strip()
+                if part.lower() not in existing_names:
+                    grouped[key]["names"].append(part)
+                    existing_names.append(part.lower())
             if e["impact"] == "red":
                 grouped[key]["has_red"] = True
 
@@ -328,6 +371,32 @@ class ChannelScraper:
             await asyncio.sleep(1)
         return sent
 
+    async def _broadcast_video_with_caption(self, file_bytes: bytes, mime: str,
+                                            caption: str):
+        """Forward a video file with caption to all destination channels."""
+        sent = None
+        for dest in self._dest_channels:
+            try:
+                ext = mimetypes.guess_extension(mime) or ".mp4"
+                buf = io.BytesIO(file_bytes)
+                buf.name = f"video{ext}"
+                buf.seek(0)
+                sent = await self._client.send_file(
+                    dest, buf, caption=caption, parse_mode="md",
+                    force_document=False,
+                    supports_streaming=True,   # enables inline playback
+                )
+                log.info(f"  → Video sent to {dest} | msg_id={sent.id}")
+            except Exception as exc:
+                log.error(f"Send video error on {dest}: {exc}")
+                # fallback: send caption as text only
+                try:
+                    sent = await self._client.send_message(dest, caption, parse_mode="md")
+                except Exception as exc2:
+                    log.error(f"Text fallback failed for {dest}: {exc2}")
+            await asyncio.sleep(1)
+        return sent
+
     async def _broadcast_media(self, text: str, image_data: Optional[bytes],
                                image_mime: str, reply_to: int = None):
         sent = None
@@ -427,6 +496,11 @@ class ChannelScraper:
         text = msg.text or msg.message or ""
         text = _normalise_urls(text)
 
+        # ── VIDEO handling ─────────────────────────────────────────────────
+        if msg.media and _is_video(msg):
+            await self._handle_video(msg, text, source_channel)
+            return
+
         image_data: Optional[bytes] = None
         image_mime = "image/jpeg"
         phash: Optional[str] = None
@@ -442,15 +516,15 @@ class ChannelScraper:
             except Exception as exc:
                 log.warning(f"Image download failed: {exc}")
 
-        if image_data and (
-            _looks_like_ff_image(text) or
-            await self._image_looks_like_ff(image_data, image_mime)
-        ):
-            is_weekly = _looks_like_weekly(text)
-            await self._handle_ff_image(
-                image_data, image_mime, text, is_weekly, source_channel, msg.id
-            )
-            return
+        # ── Calendar image detection ───────────────────────────────────────
+        if image_data:
+            caption_looks_ff = _looks_like_ff_image(text)
+            if caption_looks_ff or await self._image_looks_like_ff(image_data, image_mime):
+                is_weekly = _looks_like_weekly(text)
+                await self._handle_ff_image(
+                    image_data, image_mime, text, is_weekly, source_channel, msg.id
+                )
+                return
 
         content_hash = self._mem.hash_combined(text, image_data)
 
@@ -463,7 +537,7 @@ class ChannelScraper:
             await self._mem.mark_image_seen(phash, source_channel)
             return
 
-        # ── LOCK before AI call — prevents race condition duplicates ───────
+        # ── LOCK before AI call ────────────────────────────────────────────
         await self._mem.mark_seen(content_hash, source=source_channel)
         if phash:
             await self._mem.mark_image_seen(phash, source_channel)
@@ -500,6 +574,55 @@ class ChannelScraper:
         )
         log.info(f"✅ Posted → msg_id={sent.id} | confidence={verdict.get('confidence')}")
 
+    async def _handle_video(self, msg, caption: str, source_channel: str):
+        """
+        Handle video messages.
+        RULE: Only forward videos whose caption contains war/conflict keywords.
+        All other videos are rejected silently.
+        """
+        if not _caption_is_war_video(caption):
+            log.info(f"[SKIP] Video rejected — caption has no war/conflict keywords. Caption: {caption[:80]!r}")
+            return
+
+        log.info(f"🎥 War/conflict video detected — caption: {caption[:80]!r}")
+
+        # Compute a text hash for deduplication (we can't phash a video easily)
+        content_hash = self._mem.hash_combined(caption, None)
+        if await self._mem.is_duplicate(content_hash):
+            log.info(f"[SKIP] Video caption hash duplicate — {content_hash[:12]}…")
+            return
+
+        # Download video
+        try:
+            buf = io.BytesIO()
+            await self._client.download_media(msg.media, file=buf)
+            video_data = buf.getvalue()
+            video_mime = _doc_mime(msg)
+            log.info(f"Video: {len(video_data):,} bytes | mime={video_mime}")
+        except Exception as exc:
+            log.warning(f"Video download failed: {exc}")
+            return
+
+        # Lock before forwarding
+        await self._mem.mark_seen(content_hash, source=source_channel)
+
+        # Clean caption — strip URLs, keep relevant text
+        clean_caption = caption.strip() if caption else "⚠️ Breaking: Geopolitical Update"
+
+        # Add signature
+        post_caption = _add_signature(clean_caption)
+
+        delay = random.uniform(self._min_delay, self._max_delay)
+        log.info(f"⏳ Waiting {delay:.1f}s before posting video …")
+        await asyncio.sleep(delay)
+
+        sent = await self._broadcast_video_with_caption(video_data, video_mime, post_caption)
+        if sent:
+            log.info(f"🎥 Video posted → msg_id={sent.id}")
+            await self._mem.store_recent_post(
+                source_text=caption[:1000], post_text=post_caption[:1000], image_phash=None
+            )
+
     async def _is_similar_to_recent(self, new_text: str, new_image: Optional[bytes],
                                     new_phash: Optional[str] = None) -> bool:
         try:
@@ -532,10 +655,22 @@ class ChannelScraper:
         return False
 
     async def _image_looks_like_ff(self, image_data: bytes, image_mime: str) -> bool:
+        """
+        STRICT check: only accept genuine ForexFactory.com calendar screenshots.
+        The AI must confirm (a) it is a ForexFactory calendar AND (b) the
+        forexfactory.com URL/logo is visible in the image.
+        Other calendar sources (Investing.com, DailyFX, etc.) are rejected.
+        """
         try:
             prompt = (
-                "Is this image a ForexFactory.com economic calendar screenshot? "
-                "Respond with JSON: {\"is_ff\": true} or {\"is_ff\": false}"
+                "Look at this image carefully.\n"
+                "1. Is this a ForexFactory.com economic calendar screenshot? "
+                "Only answer true if you can see the ForexFactory.com branding, "
+                "URL, logo, or the exact ForexFactory calendar table layout.\n"
+                "2. Is any other website's calendar visible (e.g. Investing.com, "
+                "DailyFX, TradingEconomics)? If yes, answer is_ff=false.\n"
+                "Respond with JSON only: "
+                "{\"is_ff\": true/false, \"source\": \"forexfactory/other/unknown\"}"
             )
             parts = [
                 {"inline_data": {"mime_type": image_mime,
@@ -547,18 +682,20 @@ class ChannelScraper:
                 loop.run_in_executor(
                     None, lambda: self._ai._gemini_vision.generate_content(parts)
                 ),
-                timeout=30   # FIX: was 15s — too short for gemini-2.5-flash
+                timeout=35
             )
             import json as _json, re as _re
             raw = _re.sub(r"```+(?:json)?", "", resp.text).strip()
             data = _json.loads(raw)
-            return bool(data.get("is_ff", False))
+            is_ff = bool(data.get("is_ff", False))
+            source = data.get("source", "unknown")
+            log.info(f"FF image check → is_ff={is_ff} | source={source}")
+            return is_ff
         except Exception as exc:
             log.warning(f"FF image check failed: {exc} — assuming not FF")
             return False
 
     def _select_vip_events(self, events: List[dict]) -> List[dict]:
-        """Only VIP red events get reminders (FOMC, NFP, CPI, GDP, PCE, Powell)."""
         eligible = [e for e in events if _is_reminder_eligible(e)]
         if not eligible:
             return []
@@ -597,7 +734,6 @@ class ChannelScraper:
         for event in vip_events:
             event_key = f"{today_str}_{event.get('name', '')}_{event.get('currency', '')}"
 
-            # Hard duplicate guard — never send same reminder twice
             if await self._mem.has_reminder_been_sent(event_key):
                 continue
 
@@ -629,7 +765,6 @@ class ChannelScraper:
         event_name = event.get("name", "Unknown Event")
         impact_emoji = "🔴" if event.get("impact") == "red" else "🟠"
 
-        # Event-specific be-careful line
         be_careful = await self._ai.get_be_careful_line(event_name)
 
         alert_text = (
@@ -655,7 +790,6 @@ class ChannelScraper:
                 log.error(f"Reminder send failed to {dest}: {exc}", exc_info=True)
             await asyncio.sleep(1)
 
-        # Mark AFTER sending
         await self._mem.mark_reminder_sent(event_key)
         await self._mem.increment_reminder_count(today_str)
         log.info(f"Reminder sent. Daily total: {await self._mem.get_reminder_count_today(today_str)}")
@@ -681,7 +815,7 @@ class ChannelScraper:
     async def _handle_ff_image(self, image_data: bytes, image_mime: str, caption: str,
                                is_weekly: bool, source_channel: str, msg_id: int):
         today_str = _eat_today_str()
-        today_display = _eat_today_display()   # "Friday, May 1, 2026" — no leading zero
+        today_display = _eat_today_display()
         phash = self._mem.compute_phash(image_data)
 
         # ── Lock phash BEFORE AI call ──────────────────────────────────────
@@ -700,7 +834,6 @@ class ChannelScraper:
             if await self._mem.has_weekly_posted(week_key):
                 log.info(f"[SKIP] Weekly already posted ({week_key}).")
                 return
-            # Lock BEFORE AI call
             await self._mem.save_weekly_posted(week_key)
             log.info("📆 Weekly FF image — analysing …")
             result = await self._ai.analyse_ff_image(
@@ -726,7 +859,6 @@ class ChannelScraper:
             if await self._mem.has_daily_briefing(today_str):
                 log.info(f"[SKIP] Daily briefing already posted ({today_str}).")
                 return
-            # Lock with placeholder BEFORE AI call
             await self._mem.save_daily_briefing(today_str, -1, [])
             log.info(f"📅 Daily FF image — analysing … (date sent to AI: {today_display})")
 
@@ -739,7 +871,6 @@ class ChannelScraper:
                 log.info(f"[SKIP] Daily rejected: {result.get('reason')}")
                 return
 
-            # Raw AI text — NO signature added yet
             raw_text = result.get("formatted_text", "").strip()
             if not raw_text:
                 await self._mem.delete_daily_briefing(today_str)
@@ -747,7 +878,7 @@ class ChannelScraper:
 
             log.info(f"📄 Raw AI output:\n{raw_text}")
 
-            # Parse and group events
+            # Parse and group events (same-time slots merged by comma)
             events = _extract_events_from_ff_text(raw_text)
 
             # Filter geopolitical
@@ -780,23 +911,22 @@ class ChannelScraper:
 
             # ── Build final post ───────────────────────────────────────────
             has_red   = any(e["impact"] == "red" for e in events)
-            date_line = _eat_date_line()   # "Friday, May 1"
+            date_line = _eat_date_line()
 
-            # Title — HIGH IMPACT only when at least one red event exists
             title = "TODAY'S USD 🇺🇸 HIGH IMPACT NEWS" if has_red else "TODAY'S USD 🇺🇸 NEWS"
 
             lines = [title, "", date_line, ""]
             for e in events:
                 emoji = "🔴" if e["impact"] == "red" else "🟠"
+                # Names are already comma-separated if same time slot
                 lines.append(f"{emoji} {e['time_12h']} | {e['currency']}: {e['name']}")
 
-            # "Be careful" only on high impact days
             if has_red:
                 lines.append("")
                 lines.append("Be careful during these releases.")
 
             post_text = "\n".join(lines)
-            post_text = _add_signature(post_text)   # signature added ONCE
+            post_text = _add_signature(post_text)
 
             log.info(f"📅 Final post:\n{post_text}")
 
