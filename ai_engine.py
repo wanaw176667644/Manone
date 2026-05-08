@@ -2,13 +2,15 @@
 ai_engine.py — Updated version.
 
 CHANGES (this version):
-1. Hashtags now displayed with 📊📉📈 emoji line for forex trading channel feel.
-2. System prompt tightened: ONLY news that moves Gold (XAUUSD), Oil, or DXY is approved.
-   News that doesn't affect these three instruments is rejected.
-3. Video prompt updated: war/conflict ONLY if it moves Gold, Oil, or DXY.
-   All other videos including unrelated war news → rejected.
-4. Random 💡 signature 25% of the time.
-5. "Be careful" reminder lines — short, event-specific.
+1. Trend emoji (📈 📉 📊) placed INLINE in the headline by the AI, not as a footer line.
+   📈 = price rising / hitting highs
+   📉 = price dropping / falling / lows
+   📊 = volatile / mixed / uncertain / no clear direction
+2. Hashtags remain #XAUUSD / #DXY / #OIL — no trailing emoji line after hashtags.
+3. System prompt tightened: ONLY news that moves Gold (XAUUSD), Oil, or DXY is approved.
+4. Video prompt: war/conflict ONLY if it moves Gold, Oil, or DXY.
+5. Random 💡 signature 25% of the time.
+6. "Be careful" reminder lines — short, event-specific.
 """
 
 import asyncio
@@ -28,9 +30,6 @@ log = logging.getLogger("ai_engine")
 
 CHANNEL_SIGNATURE = "\n\n[Squad 4xx](https://t.me/Squad_4xx)"
 ALLOWED_HASHTAGS_SET = {"#XAUUSD", "#DXY", "#OIL"}
-
-# Emoji line shown after hashtags on approved posts
-_HASHTAG_EMOJI_LINE = "📊📉📈"
 
 
 def _add_signature(text: str) -> str:
@@ -151,9 +150,24 @@ CRITICAL FORMATTING RULES:
 - Forecast (expected) and previous values are FORBIDDEN. Never include them.
 - Technical analysis, signals, predictions, opinions are FORBIDDEN.
 - Hashtags: Use ONLY #XAUUSD, #DXY, or #OIL — only the ones relevant to the story.
-  After the hashtags add a new line with exactly: 📊📉📈
 - Do NOT add the current year at the end of posts.
 - Do NOT add signature (added automatically).
+
+TREND EMOJI RULE — CRITICAL:
+Place ONE trend emoji at the END of the headline (first line), chosen by price direction:
+  📈 — price rising, hitting highs, surging, gaining, jumping
+  📉 — price dropping, falling, declining, hitting lows, crashing
+  📊 — volatile, mixed, uncertain, no clear direction, whipsaw
+
+EXAMPLES:
+  Gold hits record high above $3,400 📈
+  Oil drops sharply on OPEC supply fears 📉
+  Dollar volatile after Fed signals caution 📊
+  Iran strikes Israeli base, Oil spikes 📈
+  US CPI cools, Gold rallies 📈
+  Gold slides on risk-on sentiment 📉
+
+Do NOT use 📈 📉 📊 anywhere else in the post — only in the headline.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REJECT IF ANY OF THESE APPLY:
@@ -178,14 +192,13 @@ REJECT IF ANY OF THESE APPLY:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMAT (if approved):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[EMOJI] [SHORT ENGLISH HEADLINE — one line, factual]
+[LEAD EMOJI] [SHORT ENGLISH HEADLINE — factual, ends with trend emoji 📈 📉 or 📊]
 
 [Source content lightly cleaned. 2-4 sentences max.]
 
 [Relevant hashtags: #XAUUSD #DXY #OIL — only those that apply]
-📊📉📈
 
-EMOJI: 🚨 🌍 📊 🏦 🛢️ 🏆 💵 ⚠️ 🗳️
+LEAD EMOJI (pick one that fits the story): 🚨 🌍 🏦 🛢️ 🏆 💵 ⚠️ 🗳️
 
 RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES — NO TRAILING COMMAS:
 {"approved": true, "reason": "brief reason", "issues": [], "formatted_text": "...", "confidence": 0.9}
@@ -216,14 +229,20 @@ REJECT IF:
 
 If APPROVED:
 - Write a clean, factual 1-3 sentence post in English
-- Start with a strong relevant emoji (🚨 🌍 ⚔️ 🛢️ 💥 ⚠️)
-- Add a bold one-line headline summarising the event
+- First line: lead emoji + headline + trend emoji at the end of the headline
+  📈 if price/market surged/spiked up, 📉 if dropped/crashed, 📊 if volatile/mixed
 - Then 1-2 sentences of clean factual detail from the caption
 - End with the relevant hashtag(s): #XAUUSD and/or #OIL
-- New line after hashtags with exactly: 📊📉📈
 - No forecast, no opinion, no signals
 - Do NOT add signature (added automatically)
 - Plain text only — no asterisks, no markdown bold
+
+Example approved output:
+🚨 Iran launches strikes on Gulf oil facility, crude spikes 📈
+
+Explosions reported at a major oil terminal in the Persian Gulf following Iranian military action. Oil prices surged over 4% on supply disruption fears.
+
+#OIL #XAUUSD
 
 Caption: {caption}
 
@@ -403,16 +422,16 @@ def _validate_and_clean(data: dict) -> dict:
         text = data["formatted_text"]
 
         if "TODAY'S USD" in text or "WEEKLY HIGH IMPACT" in text:
-            # Calendar posts: strip hashtags entirely (they go in body already)
+            # Calendar posts: strip hashtags entirely
             text = re.sub(r"#\w+", "", text).strip()
             data["formatted_text"] = text
         else:
-            # Regular posts: filter to allowed hashtags + add 📊📉📈 emoji line
+            # Regular posts: filter to allowed hashtags only (trend emoji is already in headline)
             hashtags = re.findall(r"#\w+", text)
             allowed_hashtags = [h for h in hashtags if h in ALLOWED_HASHTAGS_SET]
             text = re.sub(r"#\w+", "", text).strip()
             if allowed_hashtags:
-                text = text + "\n\n" + " ".join(allowed_hashtags) + "\n" + _HASHTAG_EMOJI_LINE
+                text = text + "\n\n" + " ".join(allowed_hashtags)
             data["formatted_text"] = text
 
     if data.get("approved") and _signal_hit(data.get("formatted_text", "")):
@@ -621,9 +640,6 @@ class AIEngine:
             log.info(f"Video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
             if verdict.get("approved") and verdict.get("formatted_text"):
                 text = verdict["formatted_text"].replace("*", "").strip()
-                # Ensure 📊📉📈 line is present after hashtags in approved video posts
-                if re.search(r"#(XAUUSD|OIL|DXY)", text) and _HASHTAG_EMOJI_LINE not in text:
-                    text = text.rstrip() + "\n" + _HASHTAG_EMOJI_LINE
                 verdict["formatted_text"] = text
             return verdict
         except Exception as exc:
@@ -638,8 +654,6 @@ class AIEngine:
             log.info(f"Groq video caption → approved={verdict['approved']} | {verdict.get('reason', '')}")
             if verdict.get("approved") and verdict.get("formatted_text"):
                 text = verdict["formatted_text"].replace("*", "").strip()
-                if re.search(r"#(XAUUSD|OIL|DXY)", text) and _HASHTAG_EMOJI_LINE not in text:
-                    text = text.rstrip() + "\n" + _HASHTAG_EMOJI_LINE
                 verdict["formatted_text"] = text
             return verdict
         except Exception as exc:
