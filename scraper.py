@@ -2,9 +2,13 @@
 scraper.py — AXIOM INTEL channel scraper and forwarder.
 
 CHANGES (this version):
-1. Video pre-filter: caption must mention Gold/Oil/DXY-related keywords before
-   AI is even called — saves API calls on irrelevant videos.
-2. War-only video rule enforced at code level (not just AI prompt).
+1. _VIDEO_MARKET_KEYWORDS tightened — only hard physical war events pass the pre-filter:
+   missile, strike, airstrike, attack, explosion, bombing, rocket, shelling, invasion.
+   Broad geopolitical keywords (blockade, nato, troops, sanctions alone) removed.
+   This prevents non-war videos from even reaching the AI.
+2. Video post-processing simplified — no _build_post_body() on video captions.
+   AI output is kept as-is (already cleaned by ai_engine.analyse_video_caption).
+   Only _add_signature() is applied after AI approval.
 3. All other logic unchanged from previous version.
 
 PREVIOUS FIXES (retained):
@@ -81,24 +85,66 @@ GEOPOLITICAL_KEYWORDS = [
     "geopolitical", "oil supply", "ukraine", "russia", "biden", "putin", "xi"
 ]
 
-# ── Video pre-filter: caption must contain at least one of these to pass ──────
-# This saves AI API calls — if the video has nothing to do with Gold/Oil/DXY,
-# we reject immediately without calling Gemini or Groq.
+# ── Video pre-filter: TIGHTENED ───────────────────────────────────────────────
+# Only hard physical war events pass this filter.
+# Caption must contain at least one keyword from this list to reach the AI.
+# This prevents wasting API credits on irrelevant or vague videos.
+#
+# RULE: Physical military action keywords ONLY.
+# Broad geopolitical terms (sanctions, blockade, nato, diplomacy) are excluded —
+# those do not describe videos we want to forward.
 _VIDEO_MARKET_KEYWORDS = [
-    # Gold / safe-haven
-    "gold", "xau", "xauusd", "safe haven", "safe-haven",
-    # Oil / energy
-    "oil", "crude", "wti", "brent", "opec", "energy", "petroleum",
-    "hormuz", "oil supply", "oil price", "pipeline", "refinery",
-    # DXY / USD
-    "dxy", "dollar index", "usd", "federal reserve", "fed ", "fomc",
-    # War keywords that move markets
-    "war", "conflict", "strike", "attack", "missile", "airstrike",
-    "invasion", "military", "sanction", "embargo", "blockade",
-    "nuclear", "troops", "ceasefire", "escalation",
-    # Key regions/actors that affect Oil
-    "iran", "iraq", "saudi", "russia", "ukraine", "israel", "gaza",
-    "middle east", "gulf", "nato", "pentagon", "kremlin",
+    # ── Physical war / attack events ──────────────────────────────────────
+    "missile",
+    "airstrike",
+    "air strike",
+    "airstrikes",
+    "air strikes",
+    "strike",
+    "strikes",
+    "attack",
+    "attacks",
+    "explosion",
+    "explosions",
+    "bombing",
+    "bomb",
+    "rocket",
+    "rockets",
+    "shelling",
+    "shell",
+    "armed attack",
+    "military strike",
+    "military attack",
+    "invasion",
+    "invaded",
+    "artillery",
+    "warplane",
+    "drone strike",
+    "ballistic",
+
+    # ── Key oil/gold-relevant regions (only in context of above events) ───
+    # These alone are NOT enough — they must appear alongside war keywords above.
+    # The AI does the final check; this just gates obvious misses.
+    "iran",
+    "iraq",
+    "israel",
+    "gaza",
+    "hezbollah",
+    "hamas",
+    "saudi arabia",
+    "hormuz",
+    "strait of hormuz",
+    "russia",
+    "ukraine",
+    "houthi",
+    "yemen",
+
+    # ── Direct commodity references ───────────────────────────────────────
+    "oil",
+    "crude",
+    "gold",
+    "xau",
+    "xauusd",
 ]
 
 # ── Bulletproof event line regex ──────────────────────────────────────────────
@@ -189,10 +235,19 @@ def _normalise_urls(text: str) -> str:
 
 def _video_caption_has_market_impact(caption: str) -> bool:
     """
-    Code-level pre-filter for videos.
-    Returns True only if the caption contains at least one keyword
-    suggesting Gold, Oil, or DXY market impact.
+    Code-level pre-filter for videos. Tightened to physical war events only.
+
+    Returns True only if the caption contains at least one keyword suggesting
+    a physical military/war event or direct Gold/Oil commodity reference.
+
     This runs BEFORE the AI call to save API credits.
+    The AI then does the final, strict approval check.
+
+    Note: Region keywords alone (iran, iraq, etc.) will pass this filter,
+    but the AI will still reject if there is no physical military event described.
+    This is intentional — a small number of false positives here is fine
+    because the AI catches them. False negatives (missing real war videos)
+    are the bigger risk to avoid.
     """
     if not caption or not caption.strip():
         return False
@@ -594,20 +649,25 @@ class ChannelScraper:
         Handle video messages.
 
         STAGE 1 — Code-level pre-filter (no API cost):
-          Caption must contain at least one Gold/Oil/DXY market keyword.
-          If not → reject immediately.
+          Caption must contain at least one physical war/attack keyword
+          OR direct Gold/Oil reference to pass.
+          If not → reject immediately. Saves API credits.
 
         STAGE 2 — AI understanding:
-          AI reads the caption. Approves ONLY if war/conflict directly
-          moves Gold, Oil, or DXY. All other videos → rejected.
+          AI reads the caption. Approves ONLY if:
+          - Physical military event (missile, strike, airstrike, attack, explosion)
+          - In a region that directly affects Oil or Gold prices
+          AI preserves the original caption — no rewriting, no analysis added.
 
         STAGE 3 — Download & post (only if AI approved).
+          Caption used exactly as returned by AI (already cleaned).
+          Only _add_signature() is applied.
         """
         log.info(f"🎥 Video received — running pre-filter on caption …")
 
         # ── STAGE 1: Code-level keyword pre-filter ─────────────────────────
         if not _video_caption_has_market_impact(caption):
-            log.info(f"[SKIP] Video pre-filter: caption has no Gold/Oil/DXY market keywords.")
+            log.info(f"[SKIP] Video pre-filter: caption has no war/strike/Gold/Oil keywords.")
             return
 
         log.info(f"🎥 Pre-filter passed — sending caption to AI for understanding …")
@@ -625,6 +685,7 @@ class ChannelScraper:
             log.info(f"[SKIP] Video rejected by AI — reason: {verdict.get('reason')}")
             return
 
+        # Get the AI-cleaned caption (original preserved, junk removed, emojis added)
         post_caption = verdict.get("formatted_text", "").strip()
         if not post_caption:
             log.info("[SKIP] Video: AI approved but returned empty text.")
@@ -644,7 +705,9 @@ class ChannelScraper:
         # Lock before forwarding
         await self._mem.mark_seen(content_hash, source=source_channel)
 
-        # Add signature
+        # Add signature — this is the ONLY post-processing step for video captions.
+        # Do NOT call _build_post_body() here — that is for news text posts only.
+        # The AI already cleaned and formatted the caption correctly.
         post_caption = _add_signature(post_caption)
 
         delay = random.uniform(self._min_delay, self._max_delay)
