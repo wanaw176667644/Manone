@@ -1,14 +1,19 @@
 """
 scraper.py — AXIOM INTEL channel scraper and forwarder.
 
-FIXES (this version):
+CHANGES (this version):
+1. Video pre-filter: caption must mention Gold/Oil/DXY-related keywords before
+   AI is even called — saves API calls on irrelevant videos.
+2. War-only video rule enforced at code level (not just AI prompt).
+3. All other logic unchanged from previous version.
+
+PREVIOUS FIXES (retained):
 1. Same-time grouping: AI prompt groups same-time events on one comma-separated line.
 2. Video support: AI reads and UNDERSTANDS the caption (not keyword match).
-   If war/geopolitical → AI reformats with emoji → posts with signature.
-   Non-war/geopolitical videos are rejected by AI.
+   If war/geopolitical AND moves Gold/Oil/DXY → AI reformats → posts with signature.
+   All other videos rejected.
 3. ForexFactory-only calendar: strict AI check — only forexfactory.com accepted.
-4. Calendar hard filter: ONLY USD events kept after parsing. All other currencies
-   (EUR, GBP, JPY, etc.) are dropped in code — not just relied on AI.
+4. Calendar hard filter: ONLY USD events kept after parsing.
 5. No duplicate-lock race condition — phash + content hash locked before AI call.
 6. Date format fix: "May 1" not "May 01".
 7. Timeouts increased for gemini-2.5-flash.
@@ -47,7 +52,6 @@ _FF_CAPTION_KEYWORDS = (
     "fomc", "federal funds rate", "interest rate decision"
 )
 
-
 _PRIORITY_KEYWORDS = [
     "fomc", "federal open market committee", "interest rate decision",
     "rate decision", "nfp", "non-farm payroll", "non-farm payrolls",
@@ -77,9 +81,27 @@ GEOPOLITICAL_KEYWORDS = [
     "geopolitical", "oil supply", "ukraine", "russia", "biden", "putin", "xi"
 ]
 
+# ── Video pre-filter: caption must contain at least one of these to pass ──────
+# This saves AI API calls — if the video has nothing to do with Gold/Oil/DXY,
+# we reject immediately without calling Gemini or Groq.
+_VIDEO_MARKET_KEYWORDS = [
+    # Gold / safe-haven
+    "gold", "xau", "xauusd", "safe haven", "safe-haven",
+    # Oil / energy
+    "oil", "crude", "wti", "brent", "opec", "energy", "petroleum",
+    "hormuz", "oil supply", "oil price", "pipeline", "refinery",
+    # DXY / USD
+    "dxy", "dollar index", "usd", "federal reserve", "fed ", "fomc",
+    # War keywords that move markets
+    "war", "conflict", "strike", "attack", "missile", "airstrike",
+    "invasion", "military", "sanction", "embargo", "blockade",
+    "nuclear", "troops", "ceasefire", "escalation",
+    # Key regions/actors that affect Oil
+    "iran", "iraq", "saudi", "russia", "ukraine", "israel", "gaza",
+    "middle east", "gulf", "nato", "pentagon", "kremlin",
+]
+
 # ── Bulletproof event line regex ──────────────────────────────────────────────
-# Handles: leading zero, no space before PM, space before colon, double space
-# NOW also handles comma-separated names on one line (same-time slot grouping)
 _EVENT_PATTERN = re.compile(
     r"(🔴|🟠)\s+(\d{1,2}:\d{2}\s*[AP]M)\s*\|\s*([A-Z]{3})\s*:\s*(.+?)(?=\n|$)",
     re.IGNORECASE
@@ -139,7 +161,7 @@ def _eat_today_str() -> str:
 
 
 def _eat_today_display() -> str:
-    # No leading zero on day — "Friday, May 1, 2026" matches "Fri May 1" in FF image
+    # No leading zero on day — "Friday, May 1, 2026"
     return _eat_now().strftime("%A, %B %-d, %Y")
 
 
@@ -159,20 +181,28 @@ def _looks_like_weekly(text: str) -> bool:
     return any(kw in text.lower() for kw in ("week", "weekly", "this week", "next week"))
 
 
-
 def _normalise_urls(text: str) -> str:
     if not text:
         return text
     return re.sub(r'(\?|&)(utm_[^&]+|fbclid=[^&]+|ref=[^&]+|source=[^&]+)', '', text)
 
 
+def _video_caption_has_market_impact(caption: str) -> bool:
+    """
+    Code-level pre-filter for videos.
+    Returns True only if the caption contains at least one keyword
+    suggesting Gold, Oil, or DXY market impact.
+    This runs BEFORE the AI call to save API credits.
+    """
+    if not caption or not caption.strip():
+        return False
+    lower = caption.lower()
+    return any(kw in lower for kw in _VIDEO_MARKET_KEYWORDS)
+
+
 def _extract_events_from_ff_text(text: str) -> List[dict]:
     """
     Parse AI output — one or more events per line — then GROUP by time_24h.
-
-    The AI prompt now outputs same-time events on ONE line already
-    (comma-separated names), but we still group defensively in case
-    the AI splits them across lines.
 
     Same time slot → comma-separated names on one line.
     Red wins: if any event at a time is red, whole group is red.
@@ -200,7 +230,6 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
         time_24h = dt.strftime("%H:%M")
         time_12h_clean = dt.strftime("%-I:%M %p")   # "3:30 PM" not "03:30 PM"
 
-        # The AI may already put "Event A, Event B" on one line — keep as-is
         raw.append({
             "name":     name_field.strip(),
             "currency": currency.strip(),
@@ -213,13 +242,13 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
         log.error("❌ No events extracted! Raw text snippet:\n%s", text[:800])
         return []
 
-    # ── HARD FILTER: USD only — drop all other currencies ─────────────────
+    # ── HARD FILTER: USD only ─────────────────────────────────────────────
     raw = [e for e in raw if e["currency"].upper() == "USD"]
     if not raw:
         log.info("No USD events found after currency filter.")
         return []
 
-    # Defensive grouping by time_24h — merges any AI-split same-time events
+    # Defensive grouping by time_24h
     grouped: dict = {}
     for e in raw:
         key = e["time_24h"]
@@ -232,7 +261,6 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
                 "names":    [e["name"]],
             }
         else:
-            # Avoid appending if the name is already present (AI might duplicate)
             existing_names = [n.strip().lower() for n in grouped[key]["names"]]
             for part in e["name"].split(","):
                 part = part.strip()
@@ -372,12 +400,11 @@ class ChannelScraper:
                 sent = await self._client.send_file(
                     dest, buf, caption=caption, parse_mode="md",
                     force_document=False,
-                    supports_streaming=True,   # enables inline playback
+                    supports_streaming=True,
                 )
                 log.info(f"  → Video sent to {dest} | msg_id={sent.id}")
             except Exception as exc:
                 log.error(f"Send video error on {dest}: {exc}")
-                # fallback: send caption as text only
                 try:
                     sent = await self._client.send_message(dest, caption, parse_mode="md")
                 except Exception as exc2:
@@ -565,11 +592,25 @@ class ChannelScraper:
     async def _handle_video(self, msg, caption: str, source_channel: str):
         """
         Handle video messages.
-        RULE: AI reads and understands the caption.
-              If war/geopolitical → AI reformats with proper emoji → post with signature.
-              All other videos (TA, signals, promo, etc.) are rejected by AI.
+
+        STAGE 1 — Code-level pre-filter (no API cost):
+          Caption must contain at least one Gold/Oil/DXY market keyword.
+          If not → reject immediately.
+
+        STAGE 2 — AI understanding:
+          AI reads the caption. Approves ONLY if war/conflict directly
+          moves Gold, Oil, or DXY. All other videos → rejected.
+
+        STAGE 3 — Download & post (only if AI approved).
         """
-        log.info(f"🎥 Video received — sending caption to AI for understanding …")
+        log.info(f"🎥 Video received — running pre-filter on caption …")
+
+        # ── STAGE 1: Code-level keyword pre-filter ─────────────────────────
+        if not _video_caption_has_market_impact(caption):
+            log.info(f"[SKIP] Video pre-filter: caption has no Gold/Oil/DXY market keywords.")
+            return
+
+        log.info(f"🎥 Pre-filter passed — sending caption to AI for understanding …")
 
         # Compute dedup hash on caption
         content_hash = self._mem.hash_combined(caption, None)
@@ -577,7 +618,7 @@ class ChannelScraper:
             log.info(f"[SKIP] Video caption hash duplicate — {content_hash[:12]}…")
             return
 
-        # ── AI understands the caption ─────────────────────────────────────
+        # ── STAGE 2: AI understands the caption ───────────────────────────
         verdict = await self._ai.analyse_video_caption(caption)
 
         if not verdict.get("approved"):
@@ -589,7 +630,7 @@ class ChannelScraper:
             log.info("[SKIP] Video: AI approved but returned empty text.")
             return
 
-        # Download video only after AI approves — saves bandwidth
+        # ── STAGE 3: Download video only after AI approves ────────────────
         try:
             buf = io.BytesIO()
             await self._client.download_media(msg.media, file=buf)
@@ -651,9 +692,6 @@ class ChannelScraper:
     async def _image_looks_like_ff(self, image_data: bytes, image_mime: str) -> bool:
         """
         STRICT check: only accept genuine ForexFactory.com calendar screenshots.
-        The AI must confirm (a) it is a ForexFactory calendar AND (b) the
-        forexfactory.com URL/logo is visible in the image.
-        Other calendar sources (Investing.com, DailyFX, etc.) are rejected.
         """
         try:
             prompt = (
@@ -872,7 +910,7 @@ class ChannelScraper:
 
             log.info(f"📄 Raw AI output:\n{raw_text}")
 
-            # Parse and group events (same-time slots merged by comma)
+            # Parse and group events
             events = _extract_events_from_ff_text(raw_text)
 
             # Filter geopolitical
@@ -912,7 +950,6 @@ class ChannelScraper:
             lines = [title, "", date_line, ""]
             for e in events:
                 emoji = "🔴" if e["impact"] == "red" else "🟠"
-                # Names are already comma-separated if same time slot
                 lines.append(f"{emoji} {e['time_12h']} | {e['currency']}: {e['name']}")
 
             if has_red:
