@@ -2,17 +2,16 @@
 scraper.py — AXIOM INTEL channel scraper and forwarder.
 
 FIXES (this version):
-1. Same-time grouping: AI prompt now explicitly forbids splitting same-time
-   events — each TIME SLOT on one line, comma-separated names.
-   _extract_events_from_ff_text groups defensively even if AI splits them.
-2. Video support: War/conflict videos forwarded if caption matches geopolitical
-   keywords. Non-war videos are rejected.
-3. ForexFactory-only calendar: _image_looks_like_ff now also checks the URL/
-   watermark text — only accepts genuine FF screenshots (forexfactory.com visible
-   OR AI confirms it). Any other calendar source is rejected.
-4. No duplicate-lock race condition — phash + content hash locked before AI call.
-5. Date format fix: "May 1" not "May 01".
-6. Timeouts increased for gemini-2.5-flash.
+1. Same-time grouping: AI prompt groups same-time events on one comma-separated line.
+2. Video support: AI reads and UNDERSTANDS the caption (not keyword match).
+   If war/geopolitical → AI reformats with emoji → posts with signature.
+   Non-war/geopolitical videos are rejected by AI.
+3. ForexFactory-only calendar: strict AI check — only forexfactory.com accepted.
+4. Calendar hard filter: ONLY USD events kept after parsing. All other currencies
+   (EUR, GBP, JPY, etc.) are dropped in code — not just relied on AI.
+5. No duplicate-lock race condition — phash + content hash locked before AI call.
+6. Date format fix: "May 1" not "May 01".
+7. Timeouts increased for gemini-2.5-flash.
 """
 
 import asyncio
@@ -48,16 +47,6 @@ _FF_CAPTION_KEYWORDS = (
     "fomc", "federal funds rate", "interest rate decision"
 )
 
-# ── WAR / conflict keywords — videos with these captions are allowed ──────────
-_WAR_VIDEO_KEYWORDS = [
-    "war", "attack", "strike", "missile", "bomb", "explosion", "military",
-    "conflict", "invasion", "troops", "airstrike", "drone strike", "combat",
-    "battle", "frontline", "front line", "shelling", "artillery",
-    "ukraine", "russia", "iran", "hormuz", "israel", "gaza", "nato",
-    "geopolitical", "escalation", "ceasefire", "sanction",
-    "trump", "putin", "xi jinping", "biden",
-    "oil supply", "oil embargo", "energy crisis",
-]
 
 _PRIORITY_KEYWORDS = [
     "fomc", "federal open market committee", "interest rate decision",
@@ -170,13 +159,6 @@ def _looks_like_weekly(text: str) -> bool:
     return any(kw in text.lower() for kw in ("week", "weekly", "this week", "next week"))
 
 
-def _caption_is_war_video(text: str) -> bool:
-    """Return True if video caption contains war/conflict keywords."""
-    if not text:
-        return False
-    lower = text.lower()
-    return any(kw in lower for kw in _WAR_VIDEO_KEYWORDS)
-
 
 def _normalise_urls(text: str) -> str:
     if not text:
@@ -229,6 +211,12 @@ def _extract_events_from_ff_text(text: str) -> List[dict]:
 
     if not raw:
         log.error("❌ No events extracted! Raw text snippet:\n%s", text[:800])
+        return []
+
+    # ── HARD FILTER: USD only — drop all other currencies ─────────────────
+    raw = [e for e in raw if e["currency"].upper() == "USD"]
+    if not raw:
+        log.info("No USD events found after currency filter.")
         return []
 
     # Defensive grouping by time_24h — merges any AI-split same-time events
@@ -577,28 +565,37 @@ class ChannelScraper:
     async def _handle_video(self, msg, caption: str, source_channel: str):
         """
         Handle video messages.
-        RULE: Only forward videos whose caption contains war/conflict keywords.
-        All other videos are rejected silently.
+        RULE: AI reads and understands the caption.
+              If war/geopolitical → AI reformats with proper emoji → post with signature.
+              All other videos (TA, signals, promo, etc.) are rejected by AI.
         """
-        if not _caption_is_war_video(caption):
-            log.info(f"[SKIP] Video rejected — caption has no war/conflict keywords. Caption: {caption[:80]!r}")
-            return
+        log.info(f"🎥 Video received — sending caption to AI for understanding …")
 
-        log.info(f"🎥 War/conflict video detected — caption: {caption[:80]!r}")
-
-        # Compute a text hash for deduplication (we can't phash a video easily)
+        # Compute dedup hash on caption
         content_hash = self._mem.hash_combined(caption, None)
         if await self._mem.is_duplicate(content_hash):
             log.info(f"[SKIP] Video caption hash duplicate — {content_hash[:12]}…")
             return
 
-        # Download video
+        # ── AI understands the caption ─────────────────────────────────────
+        verdict = await self._ai.analyse_video_caption(caption)
+
+        if not verdict.get("approved"):
+            log.info(f"[SKIP] Video rejected by AI — reason: {verdict.get('reason')}")
+            return
+
+        post_caption = verdict.get("formatted_text", "").strip()
+        if not post_caption:
+            log.info("[SKIP] Video: AI approved but returned empty text.")
+            return
+
+        # Download video only after AI approves — saves bandwidth
         try:
             buf = io.BytesIO()
             await self._client.download_media(msg.media, file=buf)
             video_data = buf.getvalue()
             video_mime = _doc_mime(msg)
-            log.info(f"Video: {len(video_data):,} bytes | mime={video_mime}")
+            log.info(f"Video downloaded: {len(video_data):,} bytes | mime={video_mime}")
         except Exception as exc:
             log.warning(f"Video download failed: {exc}")
             return
@@ -606,11 +603,8 @@ class ChannelScraper:
         # Lock before forwarding
         await self._mem.mark_seen(content_hash, source=source_channel)
 
-        # Clean caption — strip URLs, keep relevant text
-        clean_caption = caption.strip() if caption else "⚠️ Breaking: Geopolitical Update"
-
         # Add signature
-        post_caption = _add_signature(clean_caption)
+        post_caption = _add_signature(post_caption)
 
         delay = random.uniform(self._min_delay, self._max_delay)
         log.info(f"⏳ Waiting {delay:.1f}s before posting video …")
