@@ -144,14 +144,9 @@ def _strip_be_careful(text: str) -> str:
 
 
 def _strip_predictions(text: str) -> str:
-    """
-    Hard-strip any AI-added prediction/opinion sentences from formatted text.
-    Removes full sentences containing prediction language so the post reads
-    exactly like the source — factual only.
-    """
+    """Hard-strip any AI-added prediction/opinion sentences."""
     if not text:
         return text
-    # Prediction phrases that should NEVER appear in output
     _PREDICT_RE = re.compile(
         r'[^.!?\n]*\b('
         r'could\s+(go|rise|fall|drop|reach|push|move|head)|'
@@ -168,9 +163,56 @@ def _strip_predictions(text: str) -> str:
         re.IGNORECASE
     )
     cleaned = _PREDICT_RE.sub('', text).strip()
-    # Clean up any double blank lines left behind
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
     return cleaned
+
+
+# Filler phrases AI commonly adds that were NOT in the source
+_AI_FILLER_PHRASES = [
+    r'\bas investors\b[^.]*',
+    r'\bamid\s+(concerns?|fears?|uncertainty|tensions?|pressure)[^,.\n]*',
+    r'\bfollowing\s+the\s+(better|worse|stronger|weaker)[^,.\n]*',
+    r'\bin\s+response\s+to\b[^,.\n]*',
+    r'\bas\s+markets\b[^.]*',
+    r'\bdriven\s+by\b[^,.\n]*',
+    r'\bthis\s+comes\s+as\b[^.]*',
+    r'\bmeeting\s+expectations?\b[^.]*',
+    r'\bnoteworthy\b[^,.\n]*',
+    r'\bnotably\b[^,.\n]*',
+    r'\bsignificantly\b[^,.\n]*',
+    r'\bsignificant\s+(move|drop|rise|impact)[^,.\n]*',
+    r'\bflight\s+to\s+safety\b[^.]*',
+    r'\brisk[- ]off\b[^,.\n]*',
+    r'\brisk[- ]on\b[^,.\n]*',
+    r'\bsafe[- ]haven\s+demand\b[^,.\n]*',
+    r'\bmarket\s+participants?\b[^.]*',
+    r'\btraders?\s+(are|were)\s+(watching|monitoring|reacting)[^.]*',
+]
+
+_AI_FILLER_RE = re.compile(
+    '(' + '|'.join(_AI_FILLER_PHRASES) + ')',
+    re.IGNORECASE
+)
+
+
+def _strip_ai_filler(text: str) -> str:
+    """
+    Remove filler phrases AI commonly adds that were NOT in the source.
+    Examples: "as investors fled risk assets", "amid concerns",
+    "in response to", "driven by", "this comes as", etc.
+    """
+    if not text:
+        return text
+    cleaned = _AI_FILLER_RE.sub('', text)
+    # Clean up punctuation left behind
+    cleaned = re.sub(r'\s*,\s*,', ',', cleaned)
+    cleaned = re.sub(r'\s*\.\s*\.', '.', cleaned)
+    cleaned = re.sub(r',\s*\.', '.', cleaned)
+    cleaned = re.sub(r'\s+\.', '.', cleaned)   # "word ." → "word."
+    cleaned = re.sub(r'\s+,', ',', cleaned)    # "word ," → "word,"
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
 
 
 def _get_be_careful_line(event_name: str) -> str:
@@ -293,17 +335,57 @@ If the answer to ALL THREE is NO → REJECT.
 If ANY answer is YES → APPROVE.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FORMATTING (if approved):
+FORMATTING (if approved) — STRICT COPY RULES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Plain text only — NO asterisks, NO bold, NO markdown
-- Copy facts EXACTLY from source — do NOT add words
-- Do NOT predict, do NOT add opinion
-- Do NOT include forecast or previous values
-- Do NOT add signature (added automatically)
-- Use emojis:
-  📉 drops/falls/crashes  📈 rises/surges/gains  📊 volatile
-  🚨 breaking/FOMC        🏦 Fed/central bank    🛢️ oil
-  💵 dollar/DXY           ⚠️ risk event          🌍 geopolitical
+
+RULE 1 — COPY THE SOURCE WORD FOR WORD.
+Take the source text. Clean it lightly. That is all.
+Do NOT rephrase. Do NOT rewrite. Do NOT improve.
+Do NOT add ANY word that was not in the source.
+
+RULE 2 — ONLY ADD:
+- One emoji at the start of the headline
+- The headline (taken from source, not invented)
+- The source text cleaned (remove URLs, channel names, extra emojis)
+
+RULE 3 — NEVER ADD:
+- Any sentence not in the source
+- Any word not in the source
+- Phrases like: "amid", "as investors", "following",
+  "in response to", "as markets", "driven by",
+  "amid concerns", "amid fears", "amid uncertainty"
+  UNLESS those exact words were in the source.
+- Predictions: "could", "may", "might", "watch for"
+- Opinions: "bullish", "bearish", "significant", "notable"
+- Context: "this comes as", "meanwhile", "notably"
+- Previous values: "previous was", "compared to", "vs"
+- Forecast values: "expected", "forecast", "consensus"
+
+RULE 4 — FORMAT:
+[EMOJI] [HEADLINE from source — one line]
+
+[Source text — copied and lightly cleaned]
+
+EMOJIS:
+📉 drops/falls/crashes  📈 rises/surges/gains  📊 volatile
+🚨 breaking/FOMC        🏦 Fed/central bank    🛢️ oil
+💵 dollar/DXY           ⚠️ risk event          🌍 geopolitical
+
+EXAMPLE:
+Source: "Gold drops $45 to $2,910 after strong NFP data"
+CORRECT output:
+📉 Gold Drops $45 to $2,910
+Gold drops $45 to $2,910 after strong NFP data.
+
+WRONG output (added words not in source):
+📉 Gold Drops $45 to $2,910
+Gold fell $45 to $2,910 amid strong NFP data, as investors
+fled risk assets following the better-than-expected release.
+← WRONG — "amid", "as investors", "fled risk assets",
+  "following", "better-than-expected release" NOT in source.
+
+Plain text only — NO asterisks, NO bold, NO markdown.
+Do NOT add signature (added automatically).
 
 RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES — NO TRAILING COMMAS:
 {"approved": true, "reason": "brief reason", "issues": [], "formatted_text": "...", "confidence": 0.9, "affects_markets": ["XAUUSD", "OIL", "DXY"]}
@@ -565,6 +647,7 @@ def _validate_and_clean(data: dict) -> dict:
         ).strip()
         data["formatted_text"] = _strip_be_careful(data["formatted_text"])
         data["formatted_text"] = _strip_predictions(data["formatted_text"])
+        data["formatted_text"] = _strip_ai_filler(data["formatted_text"])
         text = data["formatted_text"]
 
         # ── Hashtag decision — AI affects_markets first, keyword fallback ──
@@ -1019,6 +1102,7 @@ def _build_post_body(text: str, ai_markets: list = None) -> str:
     text = re.sub(r"📌\s*(NOTE|MARKET STATUS|STATUS)[^\n]*\n?", "", text).strip()
     text = _strip_be_careful(text)
     text = _strip_predictions(text)
+    text = _strip_ai_filler(text)
     lines = text.split('\n')
     for i in range(max(0, len(lines) - 3), len(lines)):
         lines[i] = re.sub(r'\b\d{4}\b', '', lines[i])
