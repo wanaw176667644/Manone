@@ -294,12 +294,32 @@ If the news does NOT directly move or affect one of these three markets RIGHT NO
    NOT: "CPI expected at 3.2% on Friday" ❌ (forecast)
    NOT: "Analysts expect strong NFP" ❌ (forecast)
 
-6. GEOPOLITICAL — ONLY IF IT DIRECTLY MOVES GOLD OR OIL NOW
+6. WORLD LEADER STATEMENTS — ALWAYS APPROVE IF ABOUT:
+   Any official statement, tweet, or post from a world leader
+   (Trump, Biden, Putin, Xi, Netanyahu, Khamenei, MBS, etc.)
+   that directly concerns ANY of these topics:
+   - Oil supply, Hormuz strait, OPEC, energy embargo, sanctions
+   - War, military action, ceasefire, invasion
+   - Tariffs, trade war, economic sanctions
+   - Central bank policy, dollar policy, gold reserves
+   - Any statement that will clearly move Gold, Oil or USD
+
+   DO NOT require a price move to be stated.
+   The statement itself IS the market-moving event.
+
+   Example: Trump posts "Iran in State of Collapse — Open Hormuz" ✅
+   Example: Putin announces new oil export restrictions ✅
+   Example: Trump announces 30% tariffs on China ✅
+   Example: Netanyahu threatens Iran nuclear sites ✅
+   affects_markets for these: ["OIL"] for Hormuz/energy,
+   ["DXY"] for tariffs/trade, ["XAUUSD","OIL"] for war/conflict
+
+7. GEOPOLITICAL — CONFIRMED GOLD OR OIL PRICE MOVE
    War/conflict/sanctions that are CONFIRMED to have moved
    Gold or Oil price RIGHT NOW — price must be stated.
    Example: "Israel strikes Iran — Oil spikes $4 to $88" ✅
-   NOT: "Tensions rise in Middle East" ❌ (no confirmed price move)
-   NOT: "Iran threatens Hormuz" ❌ (threat only, no move yet)
+   NOT: "Tensions rise in Middle East" ❌ (no leader, no price)
+   NOT: "Iran threatens Hormuz" ❌ (anonymous source, no leader)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ❌ REJECT ALL OF THESE — no exceptions
@@ -327,12 +347,15 @@ If the news does NOT directly move or affect one of these three markets RIGHT NO
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 THE TEST — ask yourself before approving:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Did Gold, Oil, or USD ACTUALLY move RIGHT NOW? (confirmed price/%)
-2. Was there an ACTUAL Fed rate decision announced?
-3. Was there an ACTUAL economic data release with real number?
+1. Is this a world leader statement about Oil, Hormuz, War,
+   Tariffs, Sanctions, or Gold? → APPROVE IMMEDIATELY
+2. Did Gold, Oil, or USD ACTUALLY move RIGHT NOW? (confirmed price/%)
+3. Was there an ACTUAL Fed rate decision announced?
+4. Was there an ACTUAL economic data release with real number?
 
-If the answer to ALL THREE is NO → REJECT.
-If ANY answer is YES → APPROVE.
+If question 1 is YES → APPROVE.
+If ANY of 2, 3, 4 is YES → APPROVE.
+If ALL are NO → REJECT.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMATTING (if approved) — STRICT COPY RULES:
@@ -411,7 +434,10 @@ APPROVE ONLY if the caption confirms one of these:
 - USD/DXY ALREADY moved — actual level or % stated
 - FOMC actual rate decision announced right now
 - Major economic data ACTUAL released figure (NFP, CPI, GDP, PCE)
-- War/conflict that DIRECTLY caused Gold or Oil to move — price must be stated
+- War/conflict that DIRECTLY caused Gold or Oil to move — price stated
+- World leader statement (Trump, Putin, Xi, Netanyahu, etc.) about:
+  Oil supply, Hormuz, sanctions, tariffs, war, trade — APPROVE even
+  without a price move — the statement itself moves markets
 
 REJECT if:
 - No actual confirmed price move stated (vague language = REJECT)
