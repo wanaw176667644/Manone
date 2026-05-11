@@ -358,69 +358,76 @@ If ANY of 2, 3, 4 is YES → APPROVE.
 If ALL are NO → REJECT.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FORMATTING (if approved) — STRICT COPY RULES:
+FORMATTING (if approved) — STRICT RULES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-RULE 1 — COPY THE SOURCE WORD FOR WORD.
-Take the source text. Clean it lightly. That is all.
-Do NOT rephrase. Do NOT rewrite. Do NOT improve.
-Do NOT add ANY word that was not in the source.
+RULE 1 — SHORT AND CLEAN:
+Maximum 2 lines of body text after the headline.
+Do NOT repeat the headline in the body.
+Do NOT copy the full statement word for word.
+Write ONE clean factual sentence summarising what happened.
 
-RULE 2 — ONLY ADD:
-- One emoji at the start of the headline
-- The headline (taken from source, not invented)
-- The source text cleaned (remove URLs, channel names, extra emojis)
+RULE 2 — BEAUTIFUL SENTENCE:
+Write naturally. One strong sentence. Clear and direct.
+No "Thank you for your attention", no filler, no greetings.
+Remove any personal opinions from the leader ("Which I believe").
+Keep ONLY the core fact.
 
-RULE 3 — NEVER ADD:
-- Any sentence not in the source
-- Any word not in the source
-- Phrases like: "amid", "as investors", "following",
-  "in response to", "as markets", "driven by",
-  "amid concerns", "amid fears", "amid uncertainty"
-  UNLESS those exact words were in the source.
-- Predictions: "could", "may", "might", "watch for"
-- Opinions: "bullish", "bearish", "significant", "notable"
-- Context: "this comes as", "meanwhile", "notably"
-- Previous values: "previous was", "compared to", "vs"
-- Forecast values: "expected", "forecast", "consensus"
+RULE 3 — IF NEWS HAS AN IMAGE ATTACHED:
+Write even shorter — headline + ONE sentence only.
+The image carries the visual. Text must be minimal.
 
-RULE 4 — FORMAT:
-[EMOJI] [HEADLINE from source — one line]
+RULE 4 — LEADER ATTRIBUTION:
+End with a clean attribution line if it is a leader statement:
+— Donald Trump  OR  — Vladimir Putin  OR  — Netanyahu
+Short name only. No titles, no "President", no "PM".
 
-[Source text — copied and lightly cleaned]
+RULE 5 — FORMAT STRUCTURE:
+[EMOJI] [SHORT HEADLINE — one line, factual, clean]
 
-EMOJIS:
-📉 drops/falls/crashes  📈 rises/surges/gains  📊 volatile
-🚨 breaking/FOMC        🏦 Fed/central bank    🛢️ oil
-💵 dollar/DXY           ⚠️ risk event          🌍 geopolitical
+[ONE sentence — the core fact only]
 
-EXAMPLE:
-Source: "Gold drops $45 to $2,910 after strong NFP data"
-CORRECT output:
-📉 Gold Drops $45 to $2,910
-Gold drops $45 to $2,910 after strong NFP data.
+— [Leader name if applicable]
 
-WRONG output (added words not in source):
-📉 Gold Drops $45 to $2,910
-Gold fell $45 to $2,910 amid strong NFP data, as investors
-fled risk assets following the better-than-expected release.
-← WRONG — "amid", "as investors", "fled risk assets",
-  "following", "better-than-expected release" NOT in source.
+EXAMPLE — Trump Hormuz tweet:
+CORRECT:
+🛢️ Iran Declares "State of Collapse" — Requests Hormuz Strait Be Opened
+
+Iran has informed the US it is in a state of collapse 
+and is requesting the Hormuz Strait be opened.
+
+— Donald Trump
+
+WRONG (too long, repeating, ugly):
+🛢️ Iran Has Informed Us They Are in a State of Collapse
+Iran has just informed us that they are in a State of Collapse.
+They want us to Open the Hormuz Strait as soon as possible as
+they try to figure out their leadership situation. Thank you
+for your attention to this matter! President DONALD J. TRUMP
+
+RULE 6 — HASHTAGS (STRICT — only confirmed affected market):
+- Hormuz / oil supply threat → #OIL only
+- Tariffs affecting dollar → #DXY only
+- Gold price confirmed moved → #XAUUSD only
+- War with confirmed oil move → #OIL
+- Do NOT add all three unless ALL THREE are confirmed affected
+- When in doubt → use fewer hashtags, not more
 
 Plain text only — NO asterisks, NO bold, NO markdown.
 Do NOT add signature (added automatically).
 
 RESPOND WITH VALID JSON ONLY — NO MARKDOWN FENCES — NO TRAILING COMMAS:
-{"approved": true, "reason": "brief reason", "issues": [], "formatted_text": "...", "confidence": 0.9, "affects_markets": ["XAUUSD", "OIL", "DXY"]}
+{"approved": true, "reason": "brief reason", "issues": [], "formatted_text": "...", "confidence": 0.9, "affects_markets": ["OIL"]}
 
-affects_markets — STRICT RULES:
+affects_markets — STRICT:
 - "XAUUSD" → Gold price directly moved or confirmed impacted
-- "OIL"    → Oil price directly moved or confirmed impacted
-- "DXY"    → USD/DXY directly moved OR Fed rate decision OR major USD data
+- "OIL"    → Oil supply or price directly affected
+- "DXY"    → Dollar directly moved OR Fed rate decision OR tariffs
 - []       → No confirmed direct market impact
-- War news WITHOUT price → []
-- Fed speech WITHOUT rate change → []
-- Economic data release → ["DXY"] minimum, add others if they moved
+- Hormuz threat → ["OIL"] only — not XAUUSD, not DXY
+- Tariffs → ["DXY"] — add XAUUSD only if gold is mentioned
+- War → ["OIL"] if oil mentioned, ["XAUUSD"] if gold mentioned
+- Fed rate cut → ["DXY"] only unless gold/oil also stated
 """.strip()
 
 _VIDEO_CAPTION_PROMPT = """
