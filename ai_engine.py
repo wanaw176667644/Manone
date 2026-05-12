@@ -118,10 +118,11 @@ def _apply_hashtags(text: str) -> str:
 def _add_signature(text: str) -> str:
     text = text.strip()
     if "[Squad 4xx]" not in text:
+        # Use zero-width space before URL to suppress Telegram link preview
         if random.random() < 0.25:
-            text += "\n\n💡 [Squad 4xx](https://t.me/Squad_4xx)"
+            text += "\n\n💡 [Squad 4xx](https://t.me/\u200bSquad_4xx)"
         else:
-            text += "\n\n[Squad 4xx](https://t.me/Squad_4xx)"
+            text += "\n\n[Squad 4xx](https://t.me/\u200bSquad_4xx)"
     return text
 
 
@@ -609,7 +610,9 @@ CURRENT WEEK: {week_range}
 EXTRACTION RULES:
 - Only USD high-impact (🔴) and medium-impact (🟠) events.
 - No forecast, no previous data, no hashtags.
-- Do NOT include the year in dates (use "Monday — Apr 28").
+- Do NOT include the year anywhere — NO year in week range, NO year in dates.
+  WRONG: "Week of May 11 – May 18, 2026"
+  CORRECT: "Week of May 11 – May 18"
 - Do NOT add "Be careful" line — added automatically.
 - No timezone conversion. 12-hour AM/PM only. No leading zero on hours.
 - Plain text, no bold. No signature.
@@ -625,10 +628,28 @@ WRONG:
 🔴 3:30 PM | USD: NFP
 🔴 3:30 PM | USD: Unemployment Rate
 
-Group by day, sort by time within each day.
+SPACING RULE — CRITICAL:
+Put ONE blank line between each day section.
+Put NO blank lines between events within the same day.
+
+EXACT FORMAT (follow this precisely):
+WEEKLY HIGH IMPACT NEWS
+Week of May 11 – May 18
+
+Monday — May 11
+🟠 3:00 PM | USD: Some Event
+
+Tuesday — May 12
+🔴 3:30 PM | USD: Core CPI m/m, CPI m/m, CPI y/y
+
+Wednesday — May 13
+🔴 3:30 PM | USD: Core PPI m/m, PPI m/m
+
+Thursday — May 14
+🔴 3:30 PM | USD: Core Retail Sales m/m, Retail Sales m/m, Unemployment Claims
 
 If valid ForexFactory weekly:
-{{"approved": true, "reason": "valid FF weekly image", "formatted_text": "WEEKLY HIGH IMPACT NEWS\\nWeek of Apr 28 – May 2\\n\\nMonday — Apr 28\\n🔴 3:30 PM | USD: Event A, Event B\\n\\nTuesday — Apr 29\\n🟠 10:00 AM | USD: Other Event"}}
+{{"approved": true, "reason": "valid FF weekly image", "formatted_text": "WEEKLY HIGH IMPACT NEWS\\nWeek of May 11 – May 18\\n\\nMonday — May 11\\n🟠 3:00 PM | USD: Some Event\\n\\nTuesday — May 12\\n🔴 3:30 PM | USD: Core CPI m/m, CPI m/m"}}
 
 Otherwise: {{"approved": false, "reason": "..."}}
 RESPOND WITH VALID JSON ONLY.
