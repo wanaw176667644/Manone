@@ -116,14 +116,27 @@ def _apply_hashtags(text: str) -> str:
 
 
 def _add_signature(text: str) -> str:
+    """
+    Add channel signature as HTML link — more reliable than markdown
+    for clickable links in Telethon channel posts.
+    All send functions must use parse_mode='html'.
+    """
     text = text.strip()
-    if "[Squad 4xx]" not in text:
-        # Use zero-width space before URL to suppress Telegram link preview
+    if "Squad 4xx" not in text:
         if random.random() < 0.25:
-            text += "\n\n💡 [Squad 4xx](https://t.me/\u200bSquad_4xx)"
+            text += '\n\n💡 <a href="https://t.me/Squad_4xx">Squad 4xx</a>'
         else:
-            text += "\n\n[Squad 4xx](https://t.me/\u200bSquad_4xx)"
+            text += '\n\n<a href="https://t.me/Squad_4xx">Squad 4xx</a>'
     return text
+
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters in plain text before sending."""
+    return (text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            )
 
 
 def _add_us_flag_emoji(text: str) -> str:
