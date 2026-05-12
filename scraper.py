@@ -432,7 +432,9 @@ class ChannelScraper:
         sent = None
         for dest in self._dest_channels:
             try:
-                sent = await self._client.send_message(dest, text, parse_mode="md")
+                sent = await self._client.send_message(
+                    dest, text, parse_mode="html", link_preview=False
+                )
                 log.info(f"  → Text sent to {dest} | msg_id={sent.id}")
             except ChatWriteForbiddenError:
                 log.error(f"❌ No permission to post to {dest}.")
@@ -440,7 +442,9 @@ class ChannelScraper:
                 log.warning(f"FloodWait {fwe.seconds}s on {dest}")
                 await asyncio.sleep(fwe.seconds + 3)
                 try:
-                    sent = await self._client.send_message(dest, text, parse_mode="md")
+                    sent = await self._client.send_message(
+                        dest, text, parse_mode="html", link_preview=False
+                    )
                 except Exception as exc:
                     log.error(f"Retry failed for {dest}: {exc}")
             except Exception as exc:
@@ -458,15 +462,21 @@ class ChannelScraper:
                 buf.name = f"calendar{ext}"
                 buf.seek(0)
                 sent = await self._client.send_file(
-                    dest, buf, caption=caption, parse_mode="md",
-                    force_document=False, reply_to=reply_to
+                    dest, buf,
+                    caption=caption,
+                    parse_mode="html",
+                    force_document=False,
+                    reply_to=reply_to,
                 )
                 log.info(f"  → File sent to {dest} | msg_id={sent.id}")
             except Exception as exc:
                 log.error(f"Send file error on {dest}: {exc}")
                 try:
                     sent = await self._client.send_message(
-                        dest, caption, parse_mode="md", reply_to=reply_to
+                        dest, caption,
+                        parse_mode="html",
+                        reply_to=reply_to,
+                        link_preview=False,
                     )
                 except Exception as exc2:
                     log.error(f"Text fallback failed for {dest}: {exc2}")
@@ -484,7 +494,7 @@ class ChannelScraper:
                 buf.name = f"video{ext}"
                 buf.seek(0)
                 sent = await self._client.send_file(
-                    dest, buf, caption=caption, parse_mode="md",
+                    dest, buf, caption=caption, parse_mode="html",
                     force_document=False,
                     supports_streaming=True,   # enables inline playback
                 )
@@ -493,7 +503,9 @@ class ChannelScraper:
                 log.error(f"Send video error on {dest}: {exc}")
                 # fallback: send caption as text only
                 try:
-                    sent = await self._client.send_message(dest, caption, parse_mode="md")
+                    sent = await self._client.send_message(
+                        dest, caption, parse_mode="html", link_preview=False
+                    )
                 except Exception as exc2:
                     log.error(f"Text fallback failed for {dest}: {exc2}")
             await asyncio.sleep(1)
@@ -510,11 +522,12 @@ class ChannelScraper:
                     buf.name = f"media{ext}"
                     buf.seek(0)
                     sent = await self._client.send_file(
-                        dest, buf, caption=text, parse_mode="md", reply_to=reply_to
+                        dest, buf, caption=text, parse_mode="html", reply_to=reply_to
                     )
                 else:
                     sent = await self._client.send_message(
-                        dest, text, parse_mode="md", reply_to=reply_to
+                        dest, text, parse_mode="html",
+                        reply_to=reply_to, link_preview=False
                     )
                 log.info(f"  → Post sent to {dest} | msg_id={sent.id}")
             except ChatWriteForbiddenError:
@@ -529,11 +542,12 @@ class ChannelScraper:
                         buf.name = f"media{ext}"
                         buf.seek(0)
                         sent = await self._client.send_file(
-                            dest, buf, caption=text, parse_mode="md", reply_to=reply_to
+                            dest, buf, caption=text, parse_mode="html", reply_to=reply_to
                         )
                     else:
                         sent = await self._client.send_message(
-                            dest, text, parse_mode="md", reply_to=reply_to
+                            dest, text, parse_mode="html",
+                            reply_to=reply_to, link_preview=False
                         )
                 except Exception:
                     pass
@@ -960,7 +974,8 @@ class ChannelScraper:
         for dest in self._dest_channels:
             try:
                 sent = await self._client.send_message(
-                    dest, alert_text, parse_mode="md", reply_to=reply_to_msg_id
+                    dest, alert_text, parse_mode="html",
+                    reply_to=reply_to_msg_id, link_preview=False
                 )
                 if sent:
                     log.info(f"🚨 Reminder sent to {dest} → msg_id={sent.id}")
