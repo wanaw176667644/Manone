@@ -166,6 +166,44 @@ def _normalise_urls(text: str) -> str:
     return re.sub(r'(\?|&)(utm_[^&]+|fbclid=[^&]+|ref=[^&]+|source=[^&]+)', '', text)
 
 
+def _fix_weekly_spacing(text: str) -> str:
+    """
+    Ensure exactly ONE blank line between each day section in weekly post.
+    Day sections start with: Monday, Tuesday, Wednesday, Thursday, Friday
+    Events within same day stay together with no blank line between them.
+    Also strips any year (20xx) left in the text.
+    """
+    if not text:
+        return text
+
+    # Strip year anywhere
+    text = re.sub(r",?\s*\b20\d{2}\b", "", text).strip()
+
+    # If a day name is stuck on the same line as something else, split it
+    day_names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                 "Saturday", "Sunday")
+    for day in day_names:
+        # e.g. "Week of May 11 – May 18 Monday — May 11" → split at day name
+        text = re.sub(rf'(.+)\s+({day}\s+—)', r'\1\n\2', text)
+
+    lines = text.split('\n')
+    result = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue  # skip existing blank lines — we rebuild spacing
+
+        # If this line starts a new day section → add blank line before it
+        is_day_line = any(stripped.startswith(d) for d in day_names)
+        if is_day_line and result:
+            result.append("")  # blank line before each day
+
+        result.append(stripped)
+
+    return "\n".join(result)
+
+
 async def _extract_video_frames(video_data: bytes, num_frames: int = 4) -> List[bytes]:
     """
     Extract evenly-spaced JPEG frames from video bytes using ffmpeg.
@@ -969,7 +1007,8 @@ class ChannelScraper:
             now = _eat_now()
             week_start = now + timedelta(days=(7 - now.weekday()))
             week_end = week_start + timedelta(days=4)
-            week_range = f"{week_start.strftime('%b %-d')} – {week_end.strftime('%b %-d, %Y')}"
+            # NO year in week range
+            week_range = f"{week_start.strftime('%b %-d')} – {week_end.strftime('%b %-d')}"
             week_key = now.strftime("%Y-%W")
             if await self._mem.has_weekly_posted(week_key):
                 log.info(f"[SKIP] Weekly already posted ({week_key}).")
@@ -988,6 +1027,10 @@ class ChannelScraper:
             if not post_text:
                 await self._mem.delete_weekly_posted(week_key)
                 return
+            # Hard strip any year (4 digits) from weekly post
+            post_text = re.sub(r",?\s*\b20\d{2}\b", "", post_text).strip()
+            # Ensure blank lines between day sections
+            post_text = _fix_weekly_spacing(post_text)
             post_text = _add_signature(post_text)
             sent = await self._broadcast_file_with_caption(image_data, image_mime, post_text)
             if sent:
@@ -1058,12 +1101,11 @@ class ChannelScraper:
             lines = [title, "", date_line, ""]
             for e in events:
                 emoji = "🔴" if e["impact"] == "red" else "🟠"
-                # Names are already comma-separated if same time slot
                 lines.append(f"{emoji} {e['time_12h']} | {e['currency']}: {e['name']}")
 
             if has_red:
                 lines.append("")
-                lines.append("Be careful during these releases.")
+                lines.append("⚠️ Be careful during these releases.")
 
             post_text = "\n".join(lines)
             post_text = _add_signature(post_text)
